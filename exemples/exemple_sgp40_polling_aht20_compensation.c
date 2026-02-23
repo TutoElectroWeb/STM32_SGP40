@@ -33,8 +33,6 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#define SGP40_DEBUG_ENABLE              /* Active SGP40_StatusToString pour cet exemple */
-#define AHT20_DEBUG_ENABLE              /* Active AHT20_StatusToString pour cet exemple */
 #include "STM32_SGP40.h"  // Driver SGP40 — mesure VOC raw + VOC Index avec compensation T/RH
 #include "STM32_AHT20.h"  // Driver AHT20 — source T/RH pour la compensation SGP40
 #include <stdio.h>        // pour printf

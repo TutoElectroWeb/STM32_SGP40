@@ -25,6 +25,20 @@
 #define STM32_SGP40_CONF_H
 
 /* =============================================================================
+ * Debug / traces série (désactivé par défaut en production)
+ * ============================================================================= */
+
+/**
+ * @brief Active SGP40_StatusToString() et d'éventuelles traces.
+ *
+ * Décommenter pour activer — ou définir via option de compilation.
+ * En production (firmware final), laisser commenté pour économiser la Flash.
+ *
+ * @note  SGP40_StatusToString() retourne "" (chaîne vide) si non défini.
+ */
+/* #define SGP40_DEBUG_ENABLE */
+
+/* =============================================================================
  * Timeouts I2C (ms)
  * ============================================================================= */
 
@@ -62,19 +76,5 @@
 #ifndef SGP40_MAX_CONSECUTIVE_ERRORS
 #define SGP40_MAX_CONSECUTIVE_ERRORS 3U
 #endif
-
-/* =============================================================================
- * Debug / traces série (désactivé par défaut en production)
- * ============================================================================= */
-
-/**
- * @brief Active SGP40_StatusToString() et d'éventuelles traces.
- *
- * Décommenter pour activer — ou définir via option de compilation.
- * En production (firmware final), laisser commenté pour économiser la Flash.
- *
- * @note  SGP40_StatusToString() retourne "" (chaîne vide) si non défini.
- */
-/* #define SGP40_DEBUG_ENABLE */
 
 #endif /* STM32_SGP40_CONF_H */

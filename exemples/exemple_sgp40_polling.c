@@ -35,7 +35,6 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#define SGP40_DEBUG_ENABLE              /* Active SGP40_StatusToString pour cet exemple */
 #include "STM32_SGP40.h"  // le SGP40 driver
 #include <stdio.h>        // pour printf
 /* USER CODE END Includes */
