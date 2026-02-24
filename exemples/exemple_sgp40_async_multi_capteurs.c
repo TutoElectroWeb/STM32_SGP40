@@ -73,7 +73,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define LOG_NAME             "exemple_sgp40_multi_capteurs"  ///< Nom pour identification dans les logs
+#define LOG_NAME             "exemple_sgp40_async_multi_capteurs"  ///< Nom pour identification dans les logs
 #define SGP40_MEASURE_PERIOD_MS  1000U  ///< Période mesure SGP40 (ms)
 #define BME280_MEASURE_PERIOD_MS  500U  ///< Période mesure BME280 (ms)
 #define BME280_I2C_ADDR_7B       0x76   ///< Adresse BME280 (0x76 ou 0x77 selon SDO)
@@ -121,8 +121,10 @@ static void MX_I2C3_Init(void);
 /* USER CODE BEGIN 0 */
 
 /**
- * @brief Redirige printf vers UART2.
- */
+  * @brief  Retransmet un caractère via UART pour redirection stdout (printf).
+  * @param  ch  Caractère à transmettre.
+  * @retval Caractère transmis.
+  */
 int __io_putchar(int ch) {
     HAL_UART_Transmit(&huart2, (uint8_t*) &ch, 1, 0xFFFF);
     return ch;
@@ -147,48 +149,54 @@ int main(void)
 
   /* USER CODE BEGIN 2 */
 
-  /* ===========================================================================
-   * Initialisation SGP40
-   * ===========================================================================
-   *
-   * SGP40_Init configure les défauts (addr, timeout, T/RH 25°C/50%),
-   * lit le serial number et prépare l'algorithme VOC. Bloquant ~30ms une
-   * seule fois. Si FreeRTOS : appeler depuis une tâche init (non IRQ).
-   */
-  SGP40_Status init_status = SGP40_Init(&hsgp40, &hi2c3);
+  /* 1) Bannière exemple */
+  printf("\r\n========================================\r\n");                    // Séparateur visuel de démarrage
+  printf("  Fichier: " LOG_NAME "\r\n");                                         // Identification de l'exemple
+  printf("  SGP40 - Multi-capteurs async IT + BME280\r\n");                      // Titre du programme
+  printf("========================================\r\n\r\n");                    // Séparateur visuel de démarrage
+
+  /* 2) Initialisation du handle SGP40 */
+  // SGP40_Init() configure les défauts (addr, timeout, T/RH 25°C/50%),
+  // lit le serial number et prépare l'algorithme VOC. Bloquant ~30ms une
+  // seule fois. Si FreeRTOS : appeler depuis une tâche init (non IRQ).
+  printf("Initialisation SGP40...\r\n");                                          // Étape bloquante ~30ms (unique)
+  SGP40_Status init_status = SGP40_Init(&hsgp40, &hi2c3);                        // Initialise le capteur et lit son serial
   if (init_status != SGP40_OK) {
-      printf("[%s] ERREUR Init SGP40: %s\r\n", LOG_NAME, SGP40_StatusToString(init_status));
+      printf("ERREUR  Erreur init: %s\r\n", SGP40_StatusToString(init_status));  // Affiche le code d'erreur d'initialisation
       Error_Handler();
   }
+  (void)SGP40_SetCompensation(&hsgp40, 25.0f, 50.0f);                            // Valeurs par défaut — sera mise à jour via BME280
+  (void)SGP40_SetSampleInterval(&hsgp40, SGP40_MEASURE_PERIOD_MS);               // Cadence SGP40 à 1 Hz
+  (void)SGP40_PrimeForVocIndex(&hsgp40);                                          // Discard première mesure (warmup heater)
 
-  /* Compensation initiale avec les valeurs par défaut (sera mise à jour via BME280) */
-  SGP40_SetCompensation(&hsgp40, 25.0f, 50.0f);
-  SGP40_SetSampleInterval(&hsgp40, SGP40_MEASURE_PERIOD_MS);
-  SGP40_PrimeForVocIndex(&hsgp40);   // Discard première mesure (warmup heater)
+  printf("OK  SGP40 initialisé\r\n");                                             // Confirme l'initialisation réussie
+  uint64_t serial_num = 0U;                                                       // Récupération du numéro de série via l'API publique
+  (void)SGP40_GetSerialNumber(&hsgp40, &serial_num);
+  printf("   Serial: 0x%012llX\r\n", (unsigned long long)serial_num);            // Affiche le serial capteur
+  printf("   Bus I2C partagé : SGP40 (0x%02X) + BME280 (0x%02X)\r\n",
+         SGP40_I2C_ADDR_7B, BME280_I2C_ADDR_7B);                                 // Confirme les adresses des deux capteurs
+  printf("   Mode : SGP40 async IT non-bloquant, BME280 coopératif\r\n");         // Rappel du mode de fonctionnement
 
-  /* Initialise le contexte de machine d'état async (IT) */
-  SGP40_Async_Init(&sgp40_async, &hsgp40); // Pas de callbacks : Tick() suffit
+  /* 3) Initialisation du contexte async (async uniquement) */
+  SGP40_Async_Init(&sgp40_async, &hsgp40);                                        // Pas de callbacks : TickIndex() suffit
 
-  printf("[%s] SGP40 prêt — Serial: 0x%012llX\r\n",
-         LOG_NAME, (unsigned long long)hsgp40.serial_number);
-  printf("[%s] Bus I2C partagé : SGP40 (0x%02X) + BME280 (0x%02X)\r\n",
-         LOG_NAME, SGP40_I2C_ADDR_7B, BME280_I2C_ADDR_7B);
-  printf("[%s] Mode : SGP40 async IT non-bloquant, BME280 async IT non-bloquant\r\n", LOG_NAME);
-
-  /* Premier déclenchement manuel pour valider la configuration (NVIC/I2C) */
-  sgp40_last_ms = HAL_GetTick();
-  SGP40_Status trig_status = SGP40_ReadAll_IT(&sgp40_async);
+  /* 4) Premier déclenchement / validation MX (async uniquement) */
+  sgp40_last_ms = HAL_GetTick();                                                   // Initialise la base de temps pour TriggerEvery
+  SGP40_Status trig_status = SGP40_ReadAll_IT(&sgp40_async);                       // Valide la config NVIC/I2C au premier appel
 
   if (trig_status != SGP40_OK) {
       if (trig_status == SGP40_ERR_NOT_CONFIGURED) {
-          printf("[%s] ERREUR Configuration MX incomplète (I2C/IRQ) pour mode IT\r\n", LOG_NAME);
+          printf("ERREUR  Configuration MX incomplète (I2C/IRQ) pour mode IT\r\n");
           printf("   Action: vérifier I2C choisi + IRQ EV/ER puis régénérer\r\n");
       } else {
-          printf("[%s] ERREUR Erreur trigger: %s\r\n", LOG_NAME, SGP40_StatusToString(trig_status));
+          printf("ERREUR  Erreur trigger: %s\r\n", SGP40_StatusToString(trig_status));
       }
       Error_Handler();
   }
-  printf("[%s] INFO Première mesure lancée...\r\n\r\n", LOG_NAME);
+  printf("INFO  Première mesure lancée...\r\n");
+  printf("   Validation MX (I2C/IRQ) effectuée par la librairie\r\n\r\n");
+
+  /* 5) Paramètres runtime de la boucle principale */
 
   /* USER CODE END 2 */
 
@@ -240,12 +248,12 @@ int main(void)
         sgp40_error_count++;
         if (sgp40_error_count >= SGP40_MAX_CONSECUTIVE_ERRORS) {
             // Seuil configurable via STM32_SGP40_conf.h
-            printf("[%s] ERREUR I2C repetee [%u/%u] (capteur debranche ?)\r\n",
-                   LOG_NAME, sgp40_error_count, SGP40_MAX_CONSECUTIVE_ERRORS);
+            printf("ERREUR  Erreur I2C répétée [%u/%u] — capteur débranché ?\r\n",
+                   sgp40_error_count, SGP40_MAX_CONSECUTIVE_ERRORS);
             SGP40_DeInit(&hsgp40);
             Error_Handler();
         }
-        printf("[SGP40] Erreur async [%u/%u] — FSM reset, retentative au prochain cycle\r\n",
+        printf("ERREUR  Erreur async [%u/%u] — FSM reset, retentative au prochain cycle\r\n",
                sgp40_error_count, SGP40_MAX_CONSECUTIVE_ERRORS);
     }
 
@@ -270,8 +278,11 @@ int main(void)
     HAL_Delay(4000U); // Délai bloquant de 4s pour prouver que l'IT tourne en tâche de fond
 
     /* USER CODE END WHILE */
-    /* USER CODE BEGIN 3 */
   }
+  /* USER CODE BEGIN 3 */
+  /* Jamais atteint en nominal : le while(1) ne se termine pas en embedded.
+   * SGP40_DeInit() ici pour couvrir l'API (tests unitaires / bootloader). */
+  SGP40_DeInit(&hsgp40);
   /* USER CODE END 3 */
 }
 

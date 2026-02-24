@@ -45,7 +45,8 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define LOG_NAME "exemple_sgp40_voc_lecture_simple"  ///< Nom pour identification dans les logs
+#define LOG_NAME "exemple_sgp40_polling"  ///< Nom pour identification dans les logs
+/* #define SGP40_DEBUG_ENABLE */  ///< Décommenter pour activer les traces textuelles — laisser commenté en production
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -82,9 +83,13 @@ static void PrintPhase(const char *title) {
   printf("-----------------------\r\n");     // Ligne de séparation
 }
 
+/**
+  * @brief  Retransmet un caractère via UART pour redirection stdout (printf).
+  * @param  ch  Caractère à transmettre.
+  * @retval Caractère transmis.
+  */
 int __io_putchar(int ch) {
-    HAL_UART_Transmit(&huart2, (uint8_t*) &ch, 1, 0xFFFF); // Pour Envoyer le caractère via UART
-    // ITM_SendChar(ch);                 // Option alternative pour envoyer le caractère via ITM
+    HAL_UART_Transmit(&huart2, (uint8_t*) &ch, 1, 0xFFFF); // Envoi bloquant vers UART2 (console debug 115200 bauds)
     return ch;
 }
 /* USER CODE END 0 */
@@ -147,9 +152,11 @@ int main(void)
   (void)SGP40_SetCompensation(&hsgp40, 22.0f, 50.0f);  // Exemple avec température ambiante réelle (remplacer par mesure capteur T/RH)
 
     printf("OK  SGP40 initialisé\r\n");                                                   // Message de succès d'initialisation
+    uint64_t serial_num = 0U;                                                               // Récupération du numéro de série via l'API publique (pas d'accès direct au champ)
+    (void)SGP40_GetSerialNumber(&hsgp40, &serial_num);
         printf("   Serial Number: 0x%04lX%08lX\r\n\r\n",                                // Affichage du numéro de série du capteur pour vérification matérielle
-          (unsigned long)((hsgp40.serial_number >> 32) & 0xFFFFu),
-          (unsigned long)(hsgp40.serial_number & 0xFFFFFFFFu));
+          (unsigned long)((serial_num >> 32) & 0xFFFFu),
+          (unsigned long)(serial_num & 0xFFFFFFFFu));
 
   status = SGP40_SetSampleInterval(&hsgp40, 1000U);                                       // Configure la cadence de l'algorithme VOC à 1 Hz (1000 ms)
   if (status != SGP40_OK) {                                                          // Vérification du statut de la configuration
@@ -170,6 +177,7 @@ int main(void)
   uint32_t nominal_count = 0U;                                                            // Compteur de mesures nominales (remis à zéro après blackout)
   const uint32_t warmup_samples = SGP40_GetVOCWarmupSamples(&hsgp40);                              // Nombre d'échantillons de warmup de l'algorithme VOC
   uint8_t warmup_done_announced = 0U;                                                     // Flag pour indiquer si la fin du warmup a été annoncée
+  uint8_t error_count = 0U;                                                               // Compteur applicatif d'erreurs consécutives (remis à 0 sur succès)
 
   PrintPhase("Phase 2 - Warmup algorithme VOC");                                          // Titre de la phase de warmup
   printf("Note: phase warmup algorithme VOC = %lu secondes\r\n\r\n", warmup_samples);     // Affichage du nombre d'échantillons de warmup
@@ -186,10 +194,11 @@ int main(void)
         status = SGP40_MeasureVOCIndex(&hsgp40, &voc_raw, &voc_index);                              // Mesure raw + calcul VOC index en un seul appel
 
         if (status != SGP40_OK) {                                                                              // Vérification du statut de la mesure
+            error_count++;                                                                                        // Compteur applicatif d'erreurs consécutives
             printf("ERREUR  Erreur mesure [%u/%u]: %s\r\n\r\n",
-                   hsgp40.consecutive_errors, SGP40_MAX_CONSECUTIVE_ERRORS,
+                   error_count, SGP40_MAX_CONSECUTIVE_ERRORS,
                    SGP40_StatusToString(status));     // Affichage du message d'erreur avec description du code d'erreur
-            if (hsgp40.consecutive_errors >= SGP40_MAX_CONSECUTIVE_ERRORS) {
+            if (error_count >= SGP40_MAX_CONSECUTIVE_ERRORS) {
                 // Seuil d'erreurs consécutives atteint (configurable via STM32_SGP40_conf.h).
                 // SGP40_DeInit() remet le handle à zéro avant d'appeler Error_Handler().
                 // En production : appeler SGP40_Init() pour tenter une réinitialisation.
@@ -202,6 +211,7 @@ int main(void)
         }
 
         /* 2) Affichage résultats et état warmup */
+        error_count = 0U;                                                                             // Succès : remet le compteur d'erreurs à zéro
         printf("-----------------------\r\n");                                                        // Ligne de séparation pour chaque mesure
         printf("VOC Raw    : %u (0-65535)\r\n", voc_raw);                                           // Affichage de la mesure brute VOC
         printf("VOC Index  : %u (0-500)\r\n", voc_index);                                           // Affichage du VOC Index calculé
@@ -237,7 +247,7 @@ int main(void)
   /* USER CODE END WHILE */
   }
   /* USER CODE BEGIN 3 */
-
+  SGP40_DeInit(&hsgp40);  /* Jamais atteint en nominal — utile bootloader / tests unitaires */
   /* USER CODE END 3 */
 }
 

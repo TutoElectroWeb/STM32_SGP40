@@ -98,9 +98,13 @@ static void SGP40_App_OnIrqError(void *user_ctx);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+/**
+  * @brief  Retransmet un caractère via UART pour redirection stdout (printf).
+  * @param  ch  Caractère à transmettre.
+  * @retval Caractère transmis.
+  */
 int __io_putchar(int ch) {
-    HAL_UART_Transmit(&huart2, (uint8_t*) &ch, 1, 0xFFFF); // Pour Envoyer le caractère via UART
-    // ITM_SendChar(ch);                 // Option alternative pour envoyer le caractère via ITM
+    HAL_UART_Transmit(&huart2, (uint8_t*) &ch, 1, 0xFFFF); // Envoi bloquant vers UART2 (console debug 115200 bauds)
     return ch;
 }
 
@@ -193,9 +197,11 @@ int main(void)
   }
 
   printf("OK  SGP40 initialisé\r\n");                                 // Confirme l'initialisation réussie
+    uint64_t serial_num = 0U;                                           // Récupération du numéro de série via l'API publique
+    (void)SGP40_GetSerialNumber(&hsgp40, &serial_num);
     printf("   Serial: 0x%04lX%08lX\r\n\r\n",                          // Affiche le serial capteur
-      (unsigned long)((hsgp40.serial_number >> 32) & 0xFFFFu),
-      (unsigned long)(hsgp40.serial_number & 0xFFFFFFFFu));
+      (unsigned long)((serial_num >> 32) & 0xFFFFu),
+      (unsigned long)(serial_num & 0xFFFFFFFFu));
 
   /* 3) Initialisation du contexte asynchrone */
   SGP40_Async_Init(&sgp40_async, &hsgp40);                                       // Initialise la machine d'état async
@@ -206,22 +212,14 @@ int main(void)
   printf("Mode : Interruptions I2C (IT)\r\n");                                    // Décrit le mode de transfert utilisé
   printf("   Mesure toutes les 1 seconde\r\n");                                   // Informe la cadence cible
   printf("   Compatible multi-lib IT : bus partagé sans blocage mutuel\r\n");    // Mise en avant de la compatibilité multi-lib
-  printf("   Horloge logicielle : SysTick (HAL_GetTick / HAL_Delay)\r\n");     // Documente la base de temps utilisée
+  printf("   Horloge logicielle : SysTick (HAL_GetTick / HAL_Delay)\r\n");       // Documente la base de temps utilisée
   printf("   Callbacks HAL I2C inclus dans USER CODE BEGIN 4\r\n");              // Informe l'emplacement des callbacks
-  printf("   Validation MX (I2C/IRQ) effectuée par la librairie\r\n\r\n");      // Précise que les contrôles de config sont centralisés dans la lib
 
   HAL_Delay(1000U);                                                               // Laisse la console/capteur se stabiliser
 
-  /* 5) Paramètres runtime de la boucle asynchrone */
-  const uint32_t warmup_samples = SGP40_GetVOCWarmupSamples(&hsgp40);                          // Durée de warmup en échantillons
-  uint32_t warmup_count = 0U;                                                           // Compteur de mesures pendant blackout/warmup
-  uint32_t nominal_count = 0U;                                                          // Compteur de mesures nominales (remis à zéro après blackout)
-  uint8_t warmup_done_announced = 0U;                                                   // Empêche de répéter l'annonce de fin warmup
-  printf("Note: phase warmup algorithme VOC = %lu secondes\r\n\r\n", warmup_samples);   // Informe la durée de warmup
-
-  /* 6) Premier déclenchement manuel pour valider la configuration (NVIC/I2C) */
-  uint32_t last_trigger = HAL_GetTick();
-  SGP40_Status trig_status = SGP40_ReadAll_IT(&sgp40_async);
+  /* 4) Premier déclenchement / validation MX (async uniquement) */
+  uint32_t last_trigger = HAL_GetTick();                                          // Base de temps pour TriggerEvery dans le while(1)
+  SGP40_Status trig_status = SGP40_ReadAll_IT(&sgp40_async);                      // Valide la config NVIC/I2C au premier appel
 
   if (trig_status != SGP40_OK) {
       if (trig_status == SGP40_ERR_NOT_CONFIGURED) {
@@ -232,9 +230,16 @@ int main(void)
       }
       Error_Handler();
   }
-  printf("INFO  Première mesure lancée...\r\n\r\n");
+  printf("INFO  Première mesure lancée...\r\n");
+  printf("   Validation MX (I2C/IRQ) effectuée par la librairie\r\n\r\n");        // Config NVIC/I2C validée par la lib au premier appel
 
-  
+  /* 5) Paramètres runtime de la boucle principale */
+  const uint32_t warmup_samples = SGP40_GetVOCWarmupSamples(&hsgp40);                    // Durée de warmup en échantillons
+  uint32_t warmup_count = 0U;                                                             // Compteur de mesures pendant blackout/warmup
+  uint32_t nominal_count = 0U;                                                            // Compteur de mesures nominales (remis à zéro après blackout)
+  uint8_t warmup_done_announced = 0U;                                                     // Empêche de répéter l'annonce de fin warmup
+  printf("Note: phase warmup algorithme VOC = %lu secondes\r\n\r\n", warmup_samples);     // Informe la durée de warmup
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -243,13 +248,13 @@ int main(void)
   {
       uint32_t now = HAL_GetTick();                                    // Temps courant système en ms via SysTick
 
-      /* Trigger périodique 1s — TriggerEvery ne déclenche que si FSM IDLE.
+      /* Ne pas appeler SGP40_ReadAll() depuis le while(1) — mélange polling/async
+       * interdit (voir guard async_busy dans la lib). Utiliser TriggerEvery() uniquement.
+       *
+       * TriggerEvery déclenche ReadAll_IT() seulement si FSM IDLE + intervalle écoulé.
        * Si une autre lib async IT (STM32_AHT20, STM32_BME280...) occupe le bus,
-       * HAL_BUSY est reçu → FSM reste IDLE → retry automatique au cycle suivant.
-       * SGP40_Async_IsIdle() permet de vérifier l'état avant un trigger manuel. */
-      if (SGP40_Async_IsIdle(&sgp40_async)) {
-          SGP40_Async_TriggerEvery(&sgp40_async, now, &last_trigger);
-      }
+       * HAL_BUSY est reçu → FSM reste IDLE → retry automatique au cycle suivant. */
+      SGP40_Async_TriggerEvery(&sgp40_async, now, &last_trigger);
 
       /* Avance FSM, lit flags async et consomme les données via API explicite. */
       SGP40_Async_Process(&sgp40_async, now);           /* void depuis v0.9 — statut via ctx->last_status */
@@ -312,7 +317,7 @@ int main(void)
   /* USER CODE END WHILE */
   }
   /* USER CODE BEGIN 3 */
-
+  SGP40_DeInit(&hsgp40);  /* Jamais atteint en nominal — utile bootloader / tests unitaires */
   /* USER CODE END 3 */
 }
 

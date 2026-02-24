@@ -46,6 +46,7 @@
 /* USER CODE BEGIN PD */
 #define LOG_NAME       "exemple_sgp40_polling_aht20_compensation"  ///< Nom pour identification dans les logs
 #define LOOP_PERIOD_MS 1000U                                        ///< Intervalle de mesure = cadence algorithme VOC (ms)
+/* #define SGP40_DEBUG_ENABLE */  ///< Décommenter pour activer les traces textuelles — laisser commenté en production
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -118,9 +119,11 @@ int main(void)
     Error_Handler();
   }
   printf("OK  SGP40 initialisé\r\n");
+  uint64_t serial_num = 0U;                                                     // Récupération du numéro de série via l'API publique
+  (void)SGP40_GetSerialNumber(&hsgp40, &serial_num);
   printf("   Serial Number: 0x%04lX%08lX\r\n\r\n",
-      (unsigned long)((hsgp40.serial_number >> 32) & 0xFFFFu),
-      (unsigned long)(hsgp40.serial_number & 0xFFFFFFFFu));
+      (unsigned long)((serial_num >> 32) & 0xFFFFu),
+      (unsigned long)(serial_num & 0xFFFFFFFFu));
 
   // SetSampleInterval et PrimeForVocIndex APRÈS Init() — Init() écrase les champs avec les valeurs par défaut
   sgp_status = SGP40_SetSampleInterval(&hsgp40, LOOP_PERIOD_MS);   // Cadence algorithmique = intervalle entre mesures (1 Hz requis par l'algo VOC Index)
@@ -204,6 +207,11 @@ int main(void)
     HAL_Delay(LOOP_PERIOD_MS);   // Maintient la cadence 1 Hz — doit correspondre à SGP40_SetSampleInterval()
   }
   /* USER CODE END WHILE */
+
+  /* USER CODE BEGIN 3 */
+  SGP40_DeInit(&hsgp40);  /* Jamais atteint en nominal — utile bootloader / tests unitaires */
+  AHT20_DeInit(&haht20);
+  /* USER CODE END 3 */
 }
 
 /**

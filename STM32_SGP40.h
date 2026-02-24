@@ -24,6 +24,23 @@
   *        vTaskStartScheduler(). En contexte tâche, protéger l'accès au bus
   *        I2C partagé par un mutex. Ne jamais appeler HAL_Delay() depuis une IRQ.
   *
+  * @note  Contraintes CPU/FPU : l'algorithme VOC Sensirion (GasIndexAlgorithm)
+  *        utilise des calculs float en interne. Sur Cortex-M0/M0+/M3 sans FPU
+  *        matérielle (STM32G0, L0, F1, F2) les opérations sont émulées via
+  *        softfp (~8–20 cycles/op) — overhead notable à 1 Hz. Sur Cortex-M4F/M7
+  *        avec FPU activée (-mfpu=fpv4-sp-d16 -mfloat-abi=hard), impact
+  *        négligeable (<2 cycles/op). Vérifier le réglage FPU dans CubeMX :
+  *        Project Manager → Advanced Settings → Floating Point Unit.
+  *
+  * @note  HAL_BUSY en mode synchrone (polling) : si HAL_I2C_Master_Transmit/
+  *        Receive retourne HAL_BUSY en mode polling, le périphérique I2C est
+  *        matériellement occupé — état anormal en accès exclusif (guard
+  *        async_busy en place). consecutive_errors est incrémenté intentionnellement.
+  *        En mode asynchrone IT (SGP40_ReadAll_IT, bus I2C partagé multi-capteurs),
+  *        HAL_BUSY est une contention normale (autre lib en transfert) et
+  *        n'incrémente pas consecutive_errors — la FSM reste IDLE et TriggerEvery
+  *        retentera automatiquement au prochain cycle.
+  *
   * @note  sizeof(SGP40_Handle_t) ≈ 220 bytes (164 opaque algo VOC + contexte).
   *        sizeof(SGP40_Async_t)  ≈  68 bytes.
   *
@@ -149,9 +166,9 @@ typedef struct {
     uint32_t measure_count;           ///< Compteur de mesures (pour tracking warmup)
 
     /* Suivi erreurs -------------------------------------------------------- */
-    volatile uint8_t consecutive_errors; ///< Erreurs I2C consécutives (reset à 0 au succès)
-    SGP40_Status     last_error;         ///< Dernier code d'erreur retourné
-    uint32_t         last_hal_error;     ///< Dernier code HAL_I2C_GetError() (debug)
+    volatile uint8_t  consecutive_errors; ///< Erreurs I2C consécutives (reset à 0 au succès)
+    volatile SGP40_Status last_error;     ///< Dernier code d'erreur retourné (modifié depuis IRQ → volatile)
+    uint32_t          last_hal_error;     ///< Dernier code HAL_I2C_GetError() (debug)
 
     /* Sync async/polling --------------------------------------------------- */
     /** @brief 1 = une opération IT async est en cours sur ce handle.
@@ -244,6 +261,15 @@ typedef void (*SGP40_Async_OnIrqErrorCb)(void *user_ctx);
  *
  * @note  Base de temps : HAL_GetTick() (SysTick).
  * @note  sizeof(SGP40_Async_t) ≈ 68 bytes — allouer statiquement.
+ * @warning Modèle de thread unique : SGP40_Async_Process(), SGP40_Async_Tick()
+ *          et SGP40_Async_TriggerEvery() DOIVENT être appelées depuis un seul
+ *          contexte d'exécution (main loop ou une seule tâche FreeRTOS).
+ *          Les callbacks on_irq_* sont les SEULS points d'entrée autorisés
+ *          depuis les IRQ I2C HAL (MasterTxCplt, MasterRxCplt, Error).
+ *          Sur ARM Cortex-M, les écritures uint8_t/bool alignées sont atomiques
+ *          par architecture — volatile suffit, __disable_irq() n'est pas requis.
+ *          Avec FreeRTOS : placer Process/Tick dans une seule tâche low-priority
+ *          dédiée aux capteurs, ou protéger ctx par un mutex si partagé.
  */
 typedef struct {
     SGP40_Handle_t    *hsgp40;               ///< Handle SGP40 synchrone (i2c, compensation)
@@ -261,15 +287,16 @@ typedef struct {
 
     volatile bool data_ready_flag;           ///< Flag données prêtes (set depuis ISR)
     volatile bool error_flag;                ///< Flag erreur (set depuis ISR)
-    bool notify_data_pending;                ///< Notify data à envoyer (Process)
-    bool notify_error_pending;               ///< Notify error à envoyer (Process)
+    volatile bool notify_data_pending;       ///< Notify data à envoyer (Process) — écrit en IRQ → volatile
+    volatile bool notify_error_pending;      ///< Notify error à envoyer (Process) — écrit en IRQ → volatile
 
     /* Callbacks utilisateur ----------------------------------------------- */
     SGP40_Async_OnDataReadyCb    on_data_ready;     ///< Données prêtes (main loop, peut être NULL)
     SGP40_Async_OnErrorCb        on_error;           ///< Erreur (main loop, peut être NULL)
     SGP40_Async_OnIrqDataReadyCb on_irq_data_ready; ///< Données prêtes depuis IRQ (ultra-court)
     SGP40_Async_OnIrqErrorCb     on_irq_error;      ///< Erreur depuis IRQ (ultra-court)
-    void                        *user_ctx;           ///< Contexte utilisateur passé aux callbacks
+    void                        *user_ctx;           ///< Contexte callbacks main-loop (SetCallbacks)
+    void                        *irq_user_ctx;       ///< Contexte callbacks IRQ-safe (SetIrqCallbacks) — NE PAS écraser user_ctx
 } SGP40_Async_t;
 
 /* =============================================================================
@@ -318,9 +345,13 @@ SGP40_Status SGP40_SelfTest(SGP40_Handle_t *hsgp40, uint16_t *test_result);
  * @brief Mesure VOC raw (signal brut 0-65535)
  * @param hsgp40  Handle SGP40
  * @param voc_raw Pointeur pour stocker signal VOC raw
- * @retval SGP40_Status
- * @note  Bloquant ~SGP40_MEASURE_WAIT_MS (30 ms), utilise compensation T/RH.
- *        Retourne SGP40_ERR_BUSY si async en cours ou cadence non respectée.
+ * @retval SGP40_OK                 si mesure réussie
+ * @retval SGP40_ERR_NULL_PTR       si hsgp40 ou voc_raw est NULL
+ * @retval SGP40_ERR_NOT_INITIALIZED si SGP40_Init() non appelé (ou HeaterOff() effectué)
+ * @retval SGP40_ERR_BUSY           si async en cours ou cadence non respectée
+ * @retval SGP40_ERR_I2C            si erreur de communication I2C
+ * @retval SGP40_ERR_CRC            si CRC-8 invalide sur la réponse
+ * @note  Bloquant ~SGP40_MEASURE_WAIT_MS (30 ms), utilise compensation T/RH configurée.
  */
 SGP40_Status SGP40_MeasureRaw(SGP40_Handle_t *hsgp40, uint16_t *voc_raw);
 
@@ -337,6 +368,10 @@ SGP40_Status SGP40_PrimeForVocIndex(SGP40_Handle_t *hsgp40);
  * @param hsgp40      Handle SGP40
  * @param interval_ms Intervalle en ms (plage supportée: 500..10000)
  * @retval SGP40_Status
+ * @note  ⚠️  Réinitialise l'algorithme VOC Sensirion si déjà actif :
+ *        l'état d'apprentissage accumulé (baseline, gain, offset) est perdu.
+ *        Appeler uniquement en phase d'initialisation, avant toute acquisition,
+ *        jamais en cours de mesure nominale.
  */
 SGP40_Status SGP40_SetSampleInterval(SGP40_Handle_t *hsgp40, uint32_t interval_ms);
 
@@ -380,6 +415,9 @@ SGP40_Status SGP40_VOCAlgoReset(SGP40_Handle_t *hsgp40);
  * @param state0 Sortie état 0
  * @param state1 Sortie état 1
  * @retval SGP40_Status
+ * @note  Usage avancé — persistance de l'état d'apprentissage en EEPROM/Flash
+ *        pour reprendre l'algo VOC sans phase de warmup après une coupure courte.
+ *        Ne pas appeler en boucle nominale.
  */
 SGP40_Status SGP40_VOCAlgoGetStates(const SGP40_Handle_t *hsgp40, float *state0, float *state1);
 
@@ -389,6 +427,8 @@ SGP40_Status SGP40_VOCAlgoGetStates(const SGP40_Handle_t *hsgp40, float *state0,
  * @param state0 État 0
  * @param state1 État 1
  * @retval SGP40_Status
+ * @note  Usage avancé — restaurer des états issus de SGP40_VOCAlgoGetStates().
+ *        Invalide si la coupure dépasse ~30 min (baseline dérivée, recommencer).
  */
 SGP40_Status SGP40_VOCAlgoSetStates(SGP40_Handle_t *hsgp40, float state0, float state1);
 
@@ -402,6 +442,9 @@ SGP40_Status SGP40_VOCAlgoSetStates(SGP40_Handle_t *hsgp40, float state0, float 
  * @param std_initial                  Écart-type initial (10..5000)
  * @param gain_factor                  Gain (1..1000)
  * @retval SGP40_Status
+ * @note  Usage avancé — paramètres documentés dans Sensirion AN#1 et AP_SGP40.
+ *        Ne modifier qu'avec une validation expérimentale complète. Les valeurs
+ *        par défaut Sensirion sont optimales pour 98 % des applications.
  */
 SGP40_Status SGP40_VOCAlgoSetTuning(
     SGP40_Handle_t *hsgp40,
@@ -423,6 +466,8 @@ SGP40_Status SGP40_VOCAlgoSetTuning(
  * @param std_initial                  Sortie
  * @param gain_factor                  Sortie
  * @retval SGP40_Status
+ * @note  Usage avancé — utile pour vérifier les paramètres actifs ou les
+ *        sauvegarder avant un SGP40_SetSampleInterval() (resets l'algo).
  */
 SGP40_Status SGP40_VOCAlgoGetTuning(
     const SGP40_Handle_t *hsgp40,
@@ -439,6 +484,8 @@ SGP40_Status SGP40_VOCAlgoGetTuning(
  * @param hsgp40              Handle SGP40
  * @param sampling_interval_s Sortie intervalle (s)
  * @retval SGP40_Status
+ * @note  Usage avancé — valeur miroir de sample_interval_ms/1000. Utile pour
+ *        vérifier la cohérence entre le handle et l'algo après SetSampleInterval.
  */
 SGP40_Status SGP40_VOCAlgoGetSamplingInterval(const SGP40_Handle_t *hsgp40, float *sampling_interval_s);
 
@@ -460,12 +507,12 @@ const char *SGP40_VOCCategoryToString(SGP40_VOC_Category category);
  * @brief Conversion code erreur → texte (debug uniquement)
  * @param code Code erreur SGP40
  * @retval Chaîne statique (ne pas libérer), "" si SGP40_DEBUG_ENABLE non défini
- * @note  Protégé par #ifdef SGP40_DEBUG_ENABLE pour économiser la Flash en production.
- *        Activer dans STM32_SGP40_conf.h ou via -DSGP40_DEBUG_ENABLE.
+ * @note  Toujours déclarée (compilable sans SGP40_DEBUG_ENABLE) — les exemples
+ *        peuvent appeler cette fonction sans définir de flag localement.
+ *        Corps conditionnel dans STM32_SGP40.c : strings Flash présentes uniquement
+ *        si SGP40_DEBUG_ENABLE est actif (conf.h ou -D compilateur).
  */
-#ifdef SGP40_DEBUG_ENABLE
 const char *SGP40_StatusToString(SGP40_Status code);
-#endif /* SGP40_DEBUG_ENABLE */
 
 /* =============================================================================
  * Fonctions convenience (warmup + mesure tout-en-un)

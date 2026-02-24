@@ -324,7 +324,7 @@ SGP40_Status SGP40_GetSerialNumber(SGP40_Handle_t *hsgp40, uint64_t *serial) {
         return status;
     }
 
-    HAL_Delay(1U);
+    HAL_Delay(SGP40_SERIAL_READ_DELAY_MS);  // datasheet §5.3 : délai post-commande < 1 ms
 
     // Lecture 9 bytes: 3 words (2 bytes + CRC chaque)
     uint8_t buf[SGP40_SERIAL_SIZE];
@@ -400,7 +400,7 @@ SGP40_Status SGP40_MeasureRaw(SGP40_Handle_t *hsgp40, uint16_t *voc_raw) {
     }
 
     if (!hsgp40->initialized) {
-        return SGP40_ERR_NOT_READY;
+        return SGP40_ERR_NOT_INITIALIZED;              // SGP40_Init() non appelé ou HeaterOff() effectué
     }
 
     if (hsgp40->async_busy) {                          // Guard : interdit si async en cours
@@ -427,8 +427,17 @@ SGP40_Status SGP40_MeasureRaw(SGP40_Handle_t *hsgp40, uint16_t *voc_raw) {
     data[4] = temp_raw & 0xFF;                         // T° LSB
     data[5] = SGP40_CalculateCRC8(&data[3], 2);        // CRC sur les 2 octets T°
 
+    /* Mémoriser le tick AVANT le délai bloquant : cohérence avec le mode async
+     * où last_measure_tick_ms est pris avant le transfert IT.
+     * L'intervalle de cadence est mesuré depuis le déclenchement de la mesure,
+     * pas depuis sa fin, pour un résultat identique quel que soit le mode. */
+    hsgp40->measurement_mode_active = true;            // Active la garde de cadence
+    hsgp40->last_measure_tick_ms    = now_ms;          // Tick pris AVANT HAL_Delay (cohérence async)
+
     SGP40_Status status = SGP40_WriteCommandWithData(hsgp40, SGP40_CMD_MEASURE_RAW, data, 6);
     if (status != SGP40_OK) {
+        hsgp40->measurement_mode_active = false;       // Annule la garde si TX échoue
+        hsgp40->last_measure_tick_ms    = 0U;
         return status;
     }
 
@@ -442,8 +451,6 @@ SGP40_Status SGP40_MeasureRaw(SGP40_Handle_t *hsgp40, uint16_t *voc_raw) {
 
     *voc_raw = (uint16_t)((buf[0] << 8) | buf[1]);     // Assemble valeur VOC raw 16 bits
     hsgp40->last_voc_raw = *voc_raw;                   // Sauvegarde pour accès rapide
-    hsgp40->measurement_mode_active = true;            // Active la garde de cadence
-    hsgp40->last_measure_tick_ms = HAL_GetTick();      // Note l'instant de cette mesure
     hsgp40->measure_count++;                           // Incrémente compteur warmup algo
 
     return SGP40_OK;
@@ -483,6 +490,9 @@ SGP40_Status SGP40_PrimeForVocIndex(SGP40_Handle_t *hsgp40) {
  * @param hsgp40      Handle SGP40
  * @param interval_ms Intervalle en ms (plage supportée: 500..10000)
  * @retval SGP40_Status
+ * @note  ⚠️  Réinitialise l'algorithme VOC Sensirion si déjà actif :
+ *        l'état d'apprentissage accumulé (baseline, gain, offset) est perdu.
+ *        Appeler uniquement en phase d'initialisation, avant toute acquisition.
  */
 SGP40_Status SGP40_SetSampleInterval(SGP40_Handle_t *hsgp40, uint32_t interval_ms) {
     if (!hsgp40) {
@@ -501,6 +511,9 @@ SGP40_Status SGP40_SetSampleInterval(SGP40_Handle_t *hsgp40, uint32_t interval_m
             GasIndexAlgorithm_ALGORITHM_TYPE_VOC,
             ((float)hsgp40->sample_interval_ms) / 1000.0f
         );
+        /* L'algo VOC est ré-initialisé → le warmup doit recommencer.
+         * Sans ce reset, IsVOCWarmupComplete() retournerait true à tort. */
+        hsgp40->measure_count = 0U;
     }
 
     return SGP40_OK;
@@ -934,7 +947,7 @@ void SGP40_Async_Reset(SGP40_Async_t *ctx) {
     if (ctx->hsgp40) {
         ctx->hsgp40->async_busy = 0U;                 // Libère le verrou polling/async
     }
-    /* hsgp40, hi2c, callbacks, user_ctx : préservés */
+    /* hsgp40, hi2c, callbacks, user_ctx, irq_user_ctx : préservés */
 }
 
 /**
@@ -960,7 +973,7 @@ void SGP40_Async_SetIrqCallbacks(SGP40_Async_t *ctx,
     if (!ctx) return;
     ctx->on_irq_data_ready = on_irq_data_ready;
     ctx->on_irq_error      = on_irq_error;
-    ctx->user_ctx          = user_ctx;
+    ctx->irq_user_ctx      = user_ctx;   /* F1 : contexte IRQ distinct — ne pas écraser user_ctx main-loop */
 }
 
 /**
@@ -1130,9 +1143,9 @@ void SGP40_Async_Process(SGP40_Async_t *ctx, uint32_t now_ms) {
                     ctx->rx_buf, 3);
 
                 if (hal_status == HAL_BUSY) {
-                    // Bus occupé par un autre capteur : réessai dans 2ms (multi-capteurs bus partagé)
+                    // Bus occupé par un autre capteur : réessai dans SGP40_ASYNC_BUSY_RETRY_MS (multi-capteurs bus partagé)
                     // HAL_BUSY RX : async_busy reste à 1, on réessaiera
-                    ctx->meas_deadline_ms = now_ms + 2U;
+                    ctx->meas_deadline_ms = now_ms + SGP40_ASYNC_BUSY_RETRY_MS;
                 } else if (hal_status != HAL_OK) {
                     ctx->hsgp40->last_hal_error = HAL_I2C_GetError(ctx->hi2c);
                     ctx->hsgp40->consecutive_errors++;
@@ -1222,7 +1235,7 @@ void SGP40_Async_OnI2CMasterRxCplt(SGP40_Async_t *ctx, I2C_HandleTypeDef *hi2c) 
             ctx->hsgp40->async_busy = 0U;              // Libère le verrou
 
             if (ctx->on_irq_error) {
-                ctx->on_irq_error(ctx->user_ctx);
+                ctx->on_irq_error(ctx->irq_user_ctx);
             }
             return;
         }
@@ -1241,7 +1254,7 @@ void SGP40_Async_OnI2CMasterRxCplt(SGP40_Async_t *ctx, I2C_HandleTypeDef *hi2c) 
         // (données disponibles mais pas encore consommées — polling toujours bloqué)
 
         if (ctx->on_irq_data_ready) {
-            ctx->on_irq_data_ready(ctx->user_ctx);
+            ctx->on_irq_data_ready(ctx->irq_user_ctx);
         }
     }
 }
@@ -1263,7 +1276,7 @@ void SGP40_Async_OnI2CError(SGP40_Async_t *ctx, I2C_HandleTypeDef *hi2c) {
     ctx->hsgp40->async_busy    = 0U;                   // Erreur = fin de transaction HAL IT
 
     if (ctx->on_irq_error) {
-        ctx->on_irq_error(ctx->user_ctx);
+        ctx->on_irq_error(ctx->irq_user_ctx);
     }
 }
 
@@ -1273,16 +1286,19 @@ void SGP40_Async_OnI2CError(SGP40_Async_t *ctx, I2C_HandleTypeDef *hi2c) {
 
 /**
  * @brief Avance la machine d'état async et retourne un résultat actionnable
+ * @note  TICK_ERROR est émis UNIQUEMENT via ErrorFlag (vraie erreur HW : CRC, NACK,
+ *        timeout). ERR_BUSY dans last_status (contention de bus normale sur bus
+ *        partagé) ne déclenche PAS TICK_ERROR — la FSM reste IDLE et TriggerEvery
+ *        retentera automatiquement au prochain cycle.
  */
 SGP40_TickResult SGP40_Async_Tick(SGP40_Async_t *ctx, uint32_t now_ms, uint16_t *voc_raw_out) {
     if (!ctx) return SGP40_TICK_IDLE;
 
     SGP40_Async_Process(ctx, now_ms);
-    if (ctx->last_status != SGP40_OK) {
-        return SGP40_TICK_ERROR;
-    }
+    /* Ne pas tester ctx->last_status ici : last_status == ERR_BUSY si HAL_BUSY
+     * (contention de bus) — ce n'est pas une erreur → ne pas retourner TICK_ERROR. */
 
-    if (SGP40_Async_ErrorFlag(ctx)) {                  // Erreur détectée
+    if (SGP40_Async_ErrorFlag(ctx)) {                  // Vraie erreur HW uniquement
         SGP40_Async_ClearFlags(ctx);
         SGP40_Async_Reset(ctx);
         return SGP40_TICK_ERROR;

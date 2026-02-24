@@ -55,7 +55,8 @@ typedef struct {
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define LOG_NAME "exemple_sgp40_voc_statistiques"  ///< Nom pour identification dans les logs
+#define LOG_NAME "exemple_sgp40_polling_statistiques"  ///< Nom pour identification dans les logs
+/* #define SGP40_DEBUG_ENABLE */  ///< Décommenter pour activer les traces textuelles — laisser commenté en production
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -82,9 +83,13 @@ static void MX_I2C3_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+/**
+  * @brief  Retransmet un caractère via UART pour redirection stdout (printf).
+  * @param  ch  Caractère à transmettre.
+  * @retval Caractère transmis.
+  */
 int __io_putchar(int ch) {
-    HAL_UART_Transmit(&huart2, (uint8_t*) &ch, 1, 0xFFFF); // Pour Envoyer le caractère via UART
-    // ITM_SendChar(ch);                 // Option alternative pour envoyer le caractère via ITM
+    HAL_UART_Transmit(&huart2, (uint8_t*) &ch, 1, 0xFFFF); // Envoi bloquant vers UART2 (console debug 115200 bauds)
     return ch;
 }
 
@@ -179,7 +184,7 @@ int main(void)
   printf("==========================================\r\n\r\n");       // Ligne de séparation
 
   /* 2) Configuration du handle SGP40 */
-  hsgp40.i2c_timeout = SGP40_DEFAULT_TIMEOUT_MS;  // Timeout I2C en ms
+  /* SGP40_Init() configure i2c_timeout au défaut (SGP40_DEFAULT_TIMEOUT_MS) — rien à faire ici */
 
   /* 3) Initialisation du capteur */
   printf("Initialisation SGP40...\r\n");                                            // Message de démarrage de l'init
@@ -190,13 +195,15 @@ int main(void)
   }
 
   printf("OK  SGP40 initialisé\r\n");                                   // Confirme l'initialisation réussie
+    uint64_t serial_num = 0U;                                             // Récupération du numéro de série via l'API publique
+    (void)SGP40_GetSerialNumber(&hsgp40, &serial_num);
     printf("   Serial Number: 0x%04lX%08lX\r\n",                         // Affiche le serial capteur pour traçabilité
-      (unsigned long)((hsgp40.serial_number >> 32) & 0xFFFFu),
-      (unsigned long)(hsgp40.serial_number & 0xFFFFFFFFu));
+      (unsigned long)((serial_num >> 32) & 0xFFFFu),
+      (unsigned long)(serial_num & 0xFFFFFFFFu));
 
   /* 4) Compensation T/RH (valeurs fixes de démo) */
   SGP40_SetCompensation(&hsgp40, 22.5f, 45.0f);                                               // Applique une compensation fixe de démonstration
-  printf("   Compensation : T=%.1f°C, RH=%.1f%%\r\n\r\n", hsgp40.temp_c, hsgp40.rh_percent);  // Affiche la compensation appliquée
+  printf("   Compensation : T=22.5°C, RH=45.0%%\r\n\r\n");                                        // Affiche la compensation appliquée
 
   /* 5) Cadence officielle de l'algorithme VOC: 1 Hz */
   status = SGP40_SetSampleInterval(&hsgp40, 1000U);                                         // Cadence officielle: 1 échantillon/seconde
@@ -284,7 +291,7 @@ int main(void)
   /* USER CODE END WHILE */
   }
   /* USER CODE BEGIN 3 */
-
+  SGP40_DeInit(&hsgp40);  /* Jamais atteint en nominal — utile bootloader / tests unitaires */
   /* USER CODE END 3 */
 }
 

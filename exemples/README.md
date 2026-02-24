@@ -8,14 +8,16 @@ Emplacement : `Drivers/STM32_SGP40/exemples/`
 
 ## Fichiers
 
-| Fichier                                | Objectif                                                                                       | Difficulté    |
-| -------------------------------------- | ---------------------------------------------------------------------------------------------- | ------------- |
-| `exemple_sgp40_polling.c`              | Polling de base : init → mesure raw → VOC index → catégorie                                    | Débutant      |
-| `exemple_sgp40_polling_statistiques.c` | Polling avancé : suivi continu + stats min/max/moy + serial number                             | Intermédiaire |
-| `exemple_sgp40_polling_diagnostic.c`   | Polling diagnostic complet : self-test, compensation, monitoring                               | Intermédiaire |
-| `exemple_sgp40_polling_selftest.c`     | Polling validation capteur : serial, self-test, API avancée VOC, heater off/re-init + synthèse | Avancé        |
-| `exemple_sgp40_async_it.c`             | Chaîne asynchrone complète en interruptions I2C                                                | Avancé        |
-| `exemple_sgp40_async_multi_capteurs.c` | SGP40 async IT + BME280 polling sur le même bus I2C (partage coopératif)                       | Avancé        |
+| Fichier                                      | Objectif                                                                                       | Difficulté    |
+| -------------------------------------------- | ---------------------------------------------------------------------------------------------- | ------------- |
+| `exemple_sgp40_polling.c`                    | Polling de base : init → mesure raw → VOC index → catégorie                                    | Débutant      |
+| `exemple_sgp40_polling_statistiques.c`       | Polling avancé : suivi continu + stats min/max/moy + serial number                             | Intermédiaire |
+| `exemple_sgp40_polling_diagnostic.c`         | Polling diagnostic complet : self-test, compensation, monitoring                               | Intermédiaire |
+| `exemple_sgp40_polling_selftest.c`           | Polling validation capteur : serial, self-test, API avancée VOC, heater off/re-init + synthèse | Avancé        |
+| `exemple_sgp40_async_it.c`                   | Chaîne asynchrone complète en interruptions I2C                                                | Avancé        |
+| `exemple_sgp40_async_multi_capteurs.c`       | SGP40 async IT + BME280 polling sur le même bus I2C (partage coopératif)                       | Avancé        |
+| `exemple_sgp40_polling_aht20_compensation.c` | Polling SGP40 + AHT20 : compensation T/RH en temps réel                                        | Intermédiaire |
+| `exemple_sgp40_async_aht20_compensation.c`   | Async IT SGP40 + AHT20 : compensation T/RH non-bloquante sur bus partagé                       | Avancé        |
 
 ---
 
@@ -54,38 +56,39 @@ La bibliothèque utilise `HAL_GetTick()` et `HAL_Delay()` en interne — aucun w
 
 ### Configuration et initialisation
 
-| API                       | lecture_simple | voc_stats | debug | selftest | async_it | multi_capt |
-| ------------------------- | :------------: | :-------: | :---: | :------: | :------: | :--------: |
-| `SGP40_Init`              |       x        |     x     |   x   |    x     |    x     |     x      |
-| `SGP40_SetSampleInterval` |       x        |     x     |   x   |    x     |    x     |     x      |
-| `SGP40_SetCompensation`   |       x        |     x     |   x   |    x     |    x     |     x      |
+| API                       | lecture_simple | voc_stats | debug | selftest | async_it | multi_capt | aht20_poll | aht20_async |
+| ------------------------- | :------------: | :-------: | :---: | :------: | :------: | :--------: | :--------: | :---------: |
+| `SGP40_Init`              |       x        |     x     |   x   |    x     |    x     |     x      |     x      |      x      |
+| `SGP40_DeInit`            |       x        |     x     |   x   |    x     |    x     |     x      |     x      |      x      |
+| `SGP40_SetSampleInterval` |       x        |     x     |   x   |    x     |    x     |     x      |     x      |      x      |
+| `SGP40_SetCompensation`   |       x        |     x     |   x   |    x     |    x     |     x      |     x      |      x      |
 
 ### Mesure et diagnostic
 
-| API                      | lecture_simple | voc_stats | debug | selftest | async_it | multi_capt |
-| ------------------------ | :------------: | :-------: | :---: | :------: | :------: | :--------: |
-| `SGP40_MeasureRaw`       |                |           |   x   |    x     |          |            |
-| `SGP40_GetSerialNumber`  |                |     x     |       |    x     |          |            |
-| `SGP40_SelfTest`         |                |           |   x   |    x     |          |            |
-| `SGP40_HeaterOff`        |                |           |       |    x     |          |            |
-| `SGP40_PrimeForVocIndex` |       x        |     x     |       |    x     |    x     |     x      |
+| API                      | lecture_simple | voc_stats | debug | selftest | async_it | multi_capt | aht20_poll | aht20_async |
+| ------------------------ | :------------: | :-------: | :---: | :------: | :------: | :--------: | :--------: | :---------: |
+| `SGP40_MeasureRaw`       |                |           |   x   |    x     |          |            |            |             |
+| `SGP40_GetSerialNumber`  |       x        |     x     |   x   |    x     |    x     |     x      |     x      |      x      |
+| `SGP40_SelfTest`         |                |           |   x   |    x     |          |            |            |             |
+| `SGP40_HeaterOff`        |                |           |       |    x     |          |            |            |             |
+| `SGP40_PrimeForVocIndex` |       x        |     x     |       |    x     |    x     |     x      |     x      |      x      |
 
 ### Calcul VOC Index
 
-| API                         | lecture_simple | voc_stats | debug | selftest | async_it | multi_capt |
-| --------------------------- | :------------: | :-------: | :---: | :------: | :------: | :--------: |
-| `SGP40_CalculateVOCIndex`   |                |           |   x   |    x     |    x     |     x      |
-| `SGP40_GetVOCCategory`      |       x        |     x     |   x   |    x     |    x     |     x      |
-| `SGP40_VOCCategoryToString` |       x        |     x     |   x   |    x     |    x     |     x      |
-| `SGP40_StatusToString`      |       x        |     x     |   x   |    x     |    x     |     x      |
+| API                         | lecture_simple | voc_stats | debug | selftest | async_it | multi_capt | aht20_poll | aht20_async |
+| --------------------------- | :------------: | :-------: | :---: | :------: | :------: | :--------: | :--------: | :---------: |
+| `SGP40_CalculateVOCIndex`   |                |           |   x   |    x     |    x     |     x      |            |             |
+| `SGP40_GetVOCCategory`      |       x        |     x     |   x   |    x     |    x     |     x      |     x      |      x      |
+| `SGP40_VOCCategoryToString` |       x        |     x     |   x   |    x     |    x     |     x      |     x      |      x      |
+| `SGP40_StatusToString`      |       x        |     x     |   x   |    x     |    x     |     x      |     x      |      x      |
 
 ### Fonctions convenience (warmup + mesure tout-en-un)
 
-| API                         | lecture_simple | voc_stats | async_it | multi_capt |
-| --------------------------- | :------------: | :-------: | :------: | :--------: |
-| `SGP40_MeasureVOCIndex`     |       x        |     x     |          |            |
-| `SGP40_IsVOCWarmupComplete` |       x        |     x     |    x     |     x      |
-| `SGP40_GetVOCWarmupSamples` |       x        |     x     |    x     |     x      |
+| API                         | lecture_simple | voc_stats | async_it | multi_capt | aht20_poll | aht20_async |
+| --------------------------- | :------------: | :-------: | :------: | :--------: | :--------: | :---------: |
+| `SGP40_MeasureVOCIndex`     |       x        |     x     |          |            |     x      |             |
+| `SGP40_IsVOCWarmupComplete` |       x        |     x     |    x     |     x      |     x      |      x      |
+| `SGP40_GetVOCWarmupSamples` |       x        |     x     |    x     |     x      |     x      |      x      |
 
 ### API avancée algorithme VOC
 
@@ -100,23 +103,25 @@ La bibliothèque utilise `HAL_GetTick()` et `HAL_Delay()` en interne — aucun w
 
 ### API asynchrone IT (mode IT uniquement — DMA non implémenté, aucun gain sur 3-8 octets)
 
-| API                             | async_it | multi_capt |
-| ------------------------------- | :------: | :--------: |
-| `SGP40_Async_Init`              |    x     |     x      |
-| `SGP40_Async_Reset`             |    x     |            |
-| `SGP40_Async_SetCallbacks`      |    x     |            |
-| `SGP40_Async_SetIrqCallbacks`   |    x     |            |
-| `SGP40_ReadAll_IT`              |    x     |     x      |
-| `SGP40_Async_Process`           |    x     |     x      |
-| `SGP40_Async_DataReadyFlag`     |    x     |            |
-| `SGP40_Async_ErrorFlag`         |    x     |            |
-| `SGP40_Async_ClearFlags`        |    x     |            |
-| `SGP40_Async_IsIdle`            |    x     |     x      |
-| `SGP40_Async_HasData`           |    x     |            |
-| `SGP40_Async_GetData`           |    x     |            |
-| `SGP40_Async_OnI2CMasterTxCplt` |    x     |     x      |
-| `SGP40_Async_OnI2CMasterRxCplt` |    x     |     x      |
-| `SGP40_Async_OnI2CError`        |    x     |     x      |
+| API                             | async_it | multi_capt | aht20_async |
+| ------------------------------- | :------: | :--------: | :---------: |
+| `SGP40_Async_Init`              |    x     |     x      |      x      |
+| `SGP40_Async_Reset`             |    x     |            |             |
+| `SGP40_Async_SetCallbacks`      |    x     |            |             |
+| `SGP40_Async_SetIrqCallbacks`   |    x     |            |             |
+| `SGP40_ReadAll_IT`              |    x     |     x      |      x      |
+| `SGP40_Async_Process`           |    x     |     x      |             |
+| `SGP40_Async_DataReadyFlag`     |    x     |            |             |
+| `SGP40_Async_ErrorFlag`         |    x     |            |             |
+| `SGP40_Async_ClearFlags`        |    x     |            |             |
+| `SGP40_Async_IsIdle`            |    x     |     x      |             |
+| `SGP40_Async_HasData`           |    x     |            |             |
+| `SGP40_Async_GetData`           |    x     |            |             |
+| `SGP40_Async_TriggerEvery`      |    x     |     x      |      x      |
+| `SGP40_Async_TickIndex`         |    x     |     x      |      x      |
+| `SGP40_Async_OnI2CMasterTxCplt` |    x     |     x      |      x      |
+| `SGP40_Async_OnI2CMasterRxCplt` |    x     |     x      |      x      |
+| `SGP40_Async_OnI2CError`        |    x     |     x      |      x      |
 
 ---
 
@@ -127,7 +132,7 @@ La bibliothèque utilise `HAL_GetTick()` et `HAL_Delay()` en interne — aucun w
 - Toutes les temporisations utilisent `HAL_Delay()` directement (la lib gère son timing en interne)
 - Nom du fichier affiché dans la bannière d'init via `LOG_NAME`
 - Gestion d'erreur via `SGP40_StatusToString()` (pas de magic numbers)
-- `printf` redirigé vers UART2 via `_write()` dans tous les exemples
+- `printf` redirigé vers UART2 via `__io_putchar()` dans tous les exemples
 
 ## Adaptation à votre projet
 

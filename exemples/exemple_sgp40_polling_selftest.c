@@ -48,6 +48,7 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define LOG_NAME "exemple_sgp40_polling_selftest"  ///< Nom pour identification dans les logs
+/* #define SGP40_DEBUG_ENABLE */  ///< Décommenter pour activer les traces textuelles — laisser commenté en production
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -73,9 +74,13 @@ static void MX_I2C3_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+/**
+  * @brief  Retransmet un caractère via UART pour redirection stdout (printf).
+  * @param  ch  Caractère à transmettre.
+  * @retval Caractère transmis.
+  */
 int __io_putchar(int ch) {
-    HAL_UART_Transmit(&huart2, (uint8_t*) &ch, 1, 0xFFFF); // Pour Envoyer le caractère via UART
-    // ITM_SendChar(ch);                 // Option alternative pour envoyer le caractère via ITM
+    HAL_UART_Transmit(&huart2, (uint8_t*) &ch, 1, 0xFFFF); // Envoi bloquant vers UART2 (console debug 115200 bauds)
     return ch;
 }
 /* USER CODE END 0 */
@@ -215,7 +220,7 @@ int main(void)
         printf("ERREUR  Erreur compensation: %s\r\n\r\n", SGP40_StatusToString(status));
     } else {
         printf("OK  Compensation configurée\r\n");
-        printf("   T = %.1f°C, RH = %.1f%%\r\n\r\n", hsgp40.temp_c, hsgp40.rh_percent);
+        printf("   T = 22.0°C, RH = 40.0%%\r\n\r\n");
     }
     HAL_Delay(500U);
 
@@ -408,7 +413,7 @@ int main(void)
   /* USER CODE END WHILE */
   }
   /* USER CODE BEGIN 3 */
-
+  SGP40_DeInit(&hsgp40);  /* Jamais atteint en nominal — utile bootloader / tests unitaires */
   /* USER CODE END 3 */
 }
 

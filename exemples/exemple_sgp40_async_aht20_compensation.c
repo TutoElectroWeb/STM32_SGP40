@@ -14,6 +14,21 @@
  * - I2C choisi dans CubeMX, pull-up externes 4.7kΩ
  * - NVIC I2C EV/ER activés (obligatoire en mode IT)
  * - UART2 115200 pour console
+ *
+ * Compatible FreeRTOS :
+ * ─────────────────────
+ *  - SGP40_Init() et AHT20_Init() doivent être appelés avant vTaskStartScheduler()
+ *    ou depuis une tâche d'init unique. Ne jamais appeler Init() depuis plusieurs
+ *    tâches simultanément.
+ *  - HAL_Delay() en FreeRTOS suspend la tâche (pas de spin-wait CPU) ✅
+ *  - Les FSM SGP40 et AHT20 utilisent HAL_GetTick() uniquement → compatible.
+ *  - Pour plusieurs tâches FreeRTOS accédant aux capteurs sur le même bus I2C :
+ *    protéger les appels TriggerEvery/Tick par un mutex osMutexAcquire().
+ *  - Les callbacks HAL (OnI2CMasterTxCplt, RxCplt, Error) s'exécutent en IRQ :
+ *    ne jamais appeler osDelay() ou toute API FreeRTOS non ISR-safe depuis ces
+ *    callbacks. Utiliser osSemaphoreRelease() ou osEventFlagsSet().
+ *  - Les champs volatile des handles (async_busy) sont lisibles de n'importe
+ *    quelle tâche sans mutex (atomique 8 bits ARM Cortex-M).
  *****************************************************************************
  */
 /* USER CODE END Header */
@@ -117,9 +132,11 @@ int main(void)
     Error_Handler();
   }
   printf("OK  SGP40 initialisé\r\n");
+  uint64_t serial_num = 0U;                                                       // Récupération du numéro de série via l'API publique
+  (void)SGP40_GetSerialNumber(&hsgp40, &serial_num);
   printf("   Serial Number: 0x%04lX%08lX\r\n\r\n",
-      (unsigned long)((hsgp40.serial_number >> 32) & 0xFFFFu),
-      (unsigned long)(hsgp40.serial_number & 0xFFFFFFFFu));
+      (unsigned long)((serial_num >> 32) & 0xFFFFu),
+      (unsigned long)(serial_num & 0xFFFFFFFFu));
 
   // SetSampleInterval et PrimeForVocIndex APRÈS Init() — Init() écrase les champs avec les valeurs par défaut
   sgp_status = SGP40_SetSampleInterval(&hsgp40, SGP40_PERIOD_MS);  // Cadence algorithmique = période de déclenchement async (1 Hz requis)
@@ -195,9 +212,8 @@ int main(void)
       (void)SGP40_SetCompensation(&hsgp40, latest_temp_c, latest_rh_pct); // Injecte T/RH dans le calcul VOC — retour ignoré (toujours SGP40_OK)
     } else if (aht_tick == AHT20_TICK_ERROR) {
       aht20_error_count++;
-      printf("ERREUR  AHT20 async [%u/%u]: %s\r\n",
-             aht20_error_count, AHT20_MAX_CONSECUTIVE_ERRORS,
-             AHT20_StatusToString(aht20_async.last_status));               // Cause I2C — compensation figée aux dernières valeurs valides
+      printf("ERREUR  AHT20 async [%u/%u]\r\n",
+             aht20_error_count, AHT20_MAX_CONSECUTIVE_ERRORS);  // Cause I2C — compensation figée aux dernières valeurs valides
       if (aht20_error_count >= AHT20_MAX_CONSECUTIVE_ERRORS) {
         printf("INFO  Recovery AHT20 (DeInit + Init + Async_Init)\r\n");   // Tentative de réinitialisation avant de continuer
         AHT20_DeInit(&haht20);                                             // Remet le handle AHT20 à zéro
@@ -235,9 +251,8 @@ int main(void)
       }
     } else if (sgp_tick == SGP40_TICK_ERROR) {
       sgp40_error_count++;
-      printf("ERREUR  SGP40 async [%u/%u]: %s\r\n",
-             sgp40_error_count, SGP40_MAX_CONSECUTIVE_ERRORS,
-             SGP40_StatusToString(sgp40_async.last_status));               // Cause I2C — compteur vers seuil d'arrêt sécurisé
+      printf("ERREUR  SGP40 async [%u/%u]\r\n",
+             sgp40_error_count, SGP40_MAX_CONSECUTIVE_ERRORS);  // Cause I2C — compteur vers seuil d'arrêt sécurisé
       if (sgp40_error_count >= SGP40_MAX_CONSECUTIVE_ERRORS) {
         printf("ERREUR  Erreur I2C répétée (capteur débranché ?)\r\n");
         Error_Handler();                                                    // Seuil atteint — arrêt sécurisé (configurable via SGP40_MAX_CONSECUTIVE_ERRORS)
@@ -247,6 +262,11 @@ int main(void)
     HAL_Delay(2U);   // Cède le CPU 2 ms — évite la saturation bus I2C entre deux vérifications Tick
   }
   /* USER CODE END WHILE */
+
+  /* USER CODE BEGIN 3 */
+  SGP40_DeInit(&hsgp40);  /* Jamais atteint en nominal — utile bootloader / tests unitaires */
+  AHT20_DeInit(&haht20);
+  /* USER CODE END 3 */
 }
 
 /**

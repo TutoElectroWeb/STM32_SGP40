@@ -47,10 +47,23 @@ Driver C pur pour **Sensirion SGP40** sur STM32 HAL (I2C, adresse fixe `0x59`).
 
 ## 3) Pré-requis CubeMX / HAL
 
-- **I2C** : mode 7 bits, 100 kHz ou 400 kHz, pull-up externes SDA/SCL (4.7 kΩ typ.)
-- **Horloge** : `HAL_GetTick()` fonctionnel (Systick par défaut)
-- **Mode async IT** : activer NVIC I2C Event + Error du bus choisi
-- **Optionnel** : UART pour printf dans les exemples
+### Volet 1 — Mode polling (pré-requis minimaux)
+
+- **I2C** : mode 7-bit, 100 kHz ou 400 kHz
+- **Pull-ups** : résistances SDA/SCL recommandées (4.7 kΩ typ., obligatoires si pas intégrées)
+- **Horloge** : `HAL_GetTick()` fonctionnel (SysTick activé par défaut dans CubeMX)
+- **NVIC I2C** : non requis en polling
+
+### Volet 2 — Mode async IT (en plus du polling)
+
+- **NVIC** : activer **I2C Event** ET **I2C Error** du bus choisi
+  (ex. `I2C1_EV_IRQn` + `I2C1_ER_IRQn` dans CubeMX → NVIC → I2C1 event/error interrupt)
+- **Pas de DMA requis** — DMA non implémenté (aucun gain sur trames 3-8 octets, cf. Q3)
+- Placer les trois callbacks dans `USER CODE BEGIN 4` (voir §9)
+
+### Optionnel
+
+- UART pour `printf` dans les exemples
 
 ### Décision async (Q1→Q4)
 
@@ -81,19 +94,22 @@ compensation 25 °C / 50 %RH, cadence 1000 ms, puis initialise le capteur (seria
 
 ### Méthode paramétrable (recommandée)
 
+`SGP40_Init()` configure les défauts (`addr=0x59`, `timeout=100 ms`, `25 °C / 50 %RH`, `1000 ms`).
+Les personnalisations se font **après** `Init()` via les setters dédiés.
+
 ```c
 #include "STM32_SGP40.h"
 
 SGP40_HandleTypeDef hsgp40;
 
-// 1) Configuration
-hsgp40.i2c_addr_7b = SGP40_I2C_ADDR_7B;   // 0x59 (7-bit)
-hsgp40.i2c_timeout = 100;              // ms
-SGP40_SetCompensation(&hsgp40, 25.0f, 50.0f);
-
-// 2) Initialisation capteur
+// 1) Initialisation capteur (applique tous les défauts)
 SGP40_Status st = SGP40_Init(&hsgp40, &hi2c3);
 if (st != SGP40_OK) { Error_Handler(); }
+
+// 2) Personnalisation post-Init
+SGP40_SetCompensation(&hsgp40, 22.5f, 60.0f);   // T/RH depuis capteur externe
+SGP40_SetSampleInterval(&hsgp40, 2000U);          // Cadence 2 s (défaut : 1000 ms)
+hsgp40.i2c_timeout = 200U;                        // Timeout I2C personnalisé (ms)
 ```
 
 ---
@@ -287,18 +303,73 @@ void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c) {
 }
 ```
 
-### Boucle principale
+### Boucle principale (pattern recommandé : TriggerEvery + TickIndex)
 
 ```c
-while (1) {
-    SGP40_Async_Process(&sgp40_async, HAL_GetTick());
+uint32_t last_ms = 0U;
 
-    if (measurement_complete) {
-        measurement_complete = false;
-        // Traiter la donnée
+while (1) {
+    uint32_t now = HAL_GetTick();
+
+    /* Déclenchement périodique (utilise hsgp40.sample_interval_ms) */
+    SGP40_Async_TriggerEvery(&sgp40_async, now, &last_ms);
+
+    /* Avance FSM + récupère donnée si prête */
+    uint16_t voc_raw = 0U, voc_index = 0U;
+    SGP40_TickResult tick = SGP40_Async_TickIndex(&sgp40_async, now,
+                                                   &voc_raw, &voc_index);
+    switch (tick) {
+        case SGP40_TICK_DATA_READY:
+            printf("VOC raw=%u  index=%u  %s\r\n",
+                   voc_raw, voc_index,
+                   SGP40_VOCCategoryToString(SGP40_GetVOCCategory(voc_index)));
+            break;
+        case SGP40_TICK_ERROR:
+            printf("Erreur async SGP40 : %s\r\n",
+                   SGP40_StatusToString(sgp40_async.last_status));
+            break;
+        default:
+            break;
     }
 }
 ```
+
+### Diagramme états FSM
+
+```
+                     SGP40_ReadAll_IT()
+                           │
+                   ┌───────▼───────┐
+                   │  WRITE_CMD    │  ← HAL_I2C_Master_Transmit_IT (8 B)
+                   └───────┬───────┘
+                           │ OnI2CMasterTxCplt
+                   ┌───────▼───────┐
+                   │  WAIT_MEAS    │  ← attente SGP40_MEASURE_WAIT_MS (30 ms, Process/SysTick)
+                   └───────┬───────┘
+                           │ délai écoulé → HAL_I2C_Master_Receive_IT (3 B)
+                   ┌───────▼───────┐
+                   │  READ_DATA    │  ← en attente RxCplt
+                   └───────┬───────┘
+                           │ OnI2CMasterRxCplt (CRC ok)
+                   ┌───────▼───────┐
+                   │     DONE      │  ← data_ready_flag = true
+                   └───────┬───────┘
+                           │ GetData() / Tick() consomme
+                   ┌───────▼───────┐
+                   │     IDLE      │
+                   └───────────────┘
+
+  Erreur (NACK / CRC invalide / timeout) ──► ERROR ──► Reset() ──► IDLE
+  HAL_BUSY sur TX ──────────────────────────────────────────────► IDLE
+  (TriggerEvery retentera automatiquement au prochain cycle)
+```
+
+### Intégration FreeRTOS
+
+- Remplacer `HAL_GetTick()` par `osKernelGetTickCount()` si la timebase FreeRTOS est activée dans CubeMX.
+- Ne jamais appeler `HAL_Delay()` dans la tâche de mesure — utiliser `osDelay()` ou `vTaskDelay()`.
+- Si le bus I2C est partagé entre plusieurs tâches FreeRTOS, protéger les appels `TriggerEvery` / `TickIndex` avec un mutex (les callbacks IRQ restent sans mutex — ils n'accèdent qu'à des champs `volatile`).
+- Appeler `SGP40_Init()` et `SGP40_Async_Init()` depuis une **tâche d'initialisation** uniquement — jamais depuis une IRQ ni depuis `main()` avant `vTaskStartScheduler()`.
 
 ---
 

@@ -5,6 +5,7 @@
   * @author  Generated via STM32_LIB_STYLE_GUIDE.md
   * @date    2026-02-21
   * @version 0.9.0
+ * @copyright Libre sous licence MIT.
   ******************************************************************************
   * @attention
   *
@@ -36,7 +37,7 @@
  *
  * @note  SGP40_StatusToString() retourne "" (chaîne vide) si non défini.
  */
-/* #define SGP40_DEBUG_ENABLE */
+#define SGP40_DEBUG_ENABLE
 
 /* =============================================================================
  * Timeouts I2C (ms)
@@ -75,6 +76,20 @@
  */
 #ifndef SGP40_MAX_CONSECUTIVE_ERRORS
 #define SGP40_MAX_CONSECUTIVE_ERRORS 3U
+#endif
+
+/* =============================================================================
+ * Délais internes (ms)
+ * ============================================================================= */
+
+/** @brief Délai post-commande GetSerialNumber avant lecture — datasheet §5.3 : < 1 ms. */
+#ifndef SGP40_SERIAL_READ_DELAY_MS
+#define SGP40_SERIAL_READ_DELAY_MS   1U
+#endif
+
+/** @brief Délai de réessai RX HAL_BUSY (bus partagé multi-capteurs, mode async IT). */
+#ifndef SGP40_ASYNC_BUSY_RETRY_MS
+#define SGP40_ASYNC_BUSY_RETRY_MS    2U
 #endif
 
 #endif /* STM32_SGP40_CONF_H */
