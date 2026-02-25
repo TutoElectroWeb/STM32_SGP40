@@ -1,7 +1,7 @@
 /* USER CODE BEGIN Header */
 /**
  ******************************************************************************
- * @file           : 'exemple_sgp40_async_aht20_compensation.c'
+ * @file           : 'exemple_sgp40_async_it_aht20_compensation.c'
  * @brief          : [I2C IT] SGP40 async + AHT20 async pour compensation T/RH
  ******************************************************************************
  * @details
@@ -413,14 +413,18 @@ void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c) {
 
 void Error_Handler(void)
 {
-  __disable_irq();
-  while (1)
-  {
-    HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
-    for (volatile uint32_t wait = 0U; wait < 250000U; ++wait) {
-      __NOP();
+  /* USER CODE BEGIN Error_Handler_Debug */
+    /* Handler d'erreur bloquant: LED clignotante pour diagnostic visuel. */
+    __disable_irq();
+    while (1)  // Boucle d'erreur bloquante
+    {
+      HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);                           // Fait clignoter la LED d'erreur
+      for (volatile uint32_t wait = 0U; wait < 250000U; ++wait) {          // Temporisation locale 250ms sans HAL_Delay
+        __NOP();                                                            // Occupation CPU minimale pour espacer le clignotement
+      }
     }
-  }
+    
+  /* USER CODE END Error_Handler_Debug */
 }
 
 #ifdef  USE_FULL_ASSERT

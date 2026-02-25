@@ -41,7 +41,7 @@ Driver C pur pour **Sensirion SGP40** sur STM32 HAL (I2C, adresse fixe `0x59`).
 | `STM32_SGP40.c`                   | Implémentation sync + async (IT uniquement) |
 | `sensirion_gas_index_algorithm.h` | Header algorithme Sensirion GasIndex v3.2   |
 | `sensirion_gas_index_algorithm.c` | Moteur de calcul VOC Index officiel         |
-| `exemples/`                       | 6 exemples couvrant 100 % de l'API          |
+| `exemples/`                       | 8 exemples couvrant 100 % de l'API          |
 
 ---
 
@@ -186,11 +186,12 @@ while (1) {
 
 ### 6.4 Fonctions convenience (warmup + mesure tout-en-un)
 
-| Fonction                                      | Description                                 |
-| --------------------------------------------- | ------------------------------------------- |
-| `SGP40_MeasureVOCIndex(hsgp40, &raw, &index)` | MeasureRaw + CalculateVOCIndex en un appel  |
-| `SGP40_IsVOCWarmupComplete(hsgp40)`           | Warmup terminé ? (dépend de sample_interval_ms) |
-| `SGP40_GetVOCWarmupSamples(hsgp40)`           | Nombre d'échantillons warmup = ceil(45 s / interval_s) |
+| Fonction                                      | Description                                                  |
+| --------------------------------------------- | ------------------------------------------------------------ |
+| `SGP40_MeasureVOCIndex(hsgp40, &raw, &index)` | MeasureRaw + CalculateVOCIndex en un appel                   |
+| `SGP40_ReadAll(hsgp40, &data)`                | Wrapper métier : remplit `SGP40_Data` { voc_raw, voc_index } |
+| `SGP40_IsVOCWarmupComplete(hsgp40)`           | Warmup terminé ? (dépend de sample_interval_ms)              |
+| `SGP40_GetVOCWarmupSamples(hsgp40)`           | Nombre d'échantillons warmup = ceil(45 s / interval_s)       |
 
 ### 6.5 API avancée algorithme VOC (Sensirion)
 
@@ -207,24 +208,26 @@ while (1) {
 
 > **Note sur la fréquence de mesure :** La fonction `SGP40_Async_TriggerEvery` ne prend plus de paramètre `interval_ms`. L'intervalle est géré en interne par la librairie (via `SGP40_SetSampleInterval`) pour garantir une synchronisation parfaite avec l'algorithme VOC de Sensirion (qui requiert typiquement 1Hz).
 
-| Fonction                                                  | Description                                                                            |
-| --------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| `SGP40_Async_Init(ctx, hsgp40)`                           | Initialise le contexte async                                                           |
-| `SGP40_Async_Reset(ctx)`                                  | Reset machine d'état (garde callbacks)                                                 |
-| `SGP40_Async_SetCallbacks(ctx, on_data, on_err, user)`    | Callbacks main-loop                                                                    |
-| `SGP40_Async_SetIrqCallbacks(ctx, on_data, on_err, user)` | Callbacks ISR                                                                          |
-| `SGP40_ReadAll_IT(ctx)`                                   | Lance mesure non-bloquante (IT, DMA non implémenté : aucun gain pour les trames 8B/3B) |
-| `SGP40_Async_TriggerEvery(ctx, now_ms, &last_ms)`         | Déclenche une mesure périodique                                                        |
-| `SGP40_Async_Process(ctx, now_ms)`                        | Machine d'état (appeler en boucle)                                                     |
-| `SGP40_Async_DataReadyFlag(ctx)`                          | Flag donnée disponible                                                                 |
-| `SGP40_Async_ErrorFlag(ctx)`                              | Flag erreur                                                                            |
-| `SGP40_Async_ClearFlags(ctx)`                             | Reset des flags                                                                        |
-| `SGP40_Async_IsIdle(ctx)`                                 | Machine au repos ?                                                                     |
-| `SGP40_Async_HasData(ctx)`                                | Donnée prête à lire ?                                                                  |
-| `SGP40_Async_GetData(ctx, &voc_raw)`                      | Récupère la donnée                                                                     |
-| `SGP40_Async_OnI2CMasterTxCplt(ctx, hi2c)`                | Relais callback HAL TX                                                                 |
-| `SGP40_Async_OnI2CMasterRxCplt(ctx, hi2c)`                | Relais callback HAL RX                                                                 |
-| `SGP40_Async_OnI2CError(ctx, hi2c)`                       | Relais callback HAL Error                                                              |
+| Fonction                                                  | Description                                                                                     |
+| --------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `SGP40_Async_Init(ctx, hsgp40)`                           | Initialise le contexte async                                                                    |
+| `SGP40_Async_Reset(ctx)`                                  | Reset machine d'état (garde callbacks)                                                          |
+| `SGP40_Async_SetCallbacks(ctx, on_data, on_err, user)`    | Callbacks main-loop                                                                             |
+| `SGP40_Async_SetIrqCallbacks(ctx, on_data, on_err, user)` | Callbacks ISR                                                                                   |
+| `SGP40_ReadAll_IT(ctx)`                                   | Lance mesure non-bloquante (IT, DMA non implémenté : aucun gain pour les trames 8B/3B)          |
+| `SGP40_Async_TriggerEvery(ctx, now_ms, &last_ms)`         | Déclenche une mesure périodique                                                                 |
+| `SGP40_Async_Process(ctx, now_ms)`                        | Machine d'état (appeler en boucle)                                                              |
+| `SGP40_Async_DataReadyFlag(ctx)`                          | Flag donnée disponible                                                                          |
+| `SGP40_Async_ErrorFlag(ctx)`                              | Flag erreur                                                                                     |
+| `SGP40_Async_ClearFlags(ctx)`                             | Reset des flags                                                                                 |
+| `SGP40_Async_IsIdle(ctx)`                                 | Machine au repos ?                                                                              |
+| `SGP40_Async_HasData(ctx)`                                | Donnée prête à lire ?                                                                           |
+| `SGP40_Async_GetData(ctx, &voc_raw)`                      | Récupère la donnée                                                                              |
+| `SGP40_Async_Tick(ctx, now_ms, &voc_raw)`                 | Helper combinant Process + flags — retourne `SGP40_TickResult` (IDLE/BUSY/DATA_READY/ERROR)     |
+| `SGP40_Async_TickIndex(ctx, now_ms, &voc_raw, &voc_idx)`  | Helper Tick + calcul VOC Index Sensirion — format d'entrée recommandé pour la boucle principale |
+| `SGP40_Async_OnI2CMasterTxCplt(ctx, hi2c)`                | Relais callback HAL TX                                                                          |
+| `SGP40_Async_OnI2CMasterRxCplt(ctx, hi2c)`                | Relais callback HAL RX                                                                          |
+| `SGP40_Async_OnI2CError(ctx, hi2c)`                       | Relais callback HAL Error                                                                       |
 
 ---
 
@@ -250,21 +253,21 @@ typedef enum {
 } SGP40_Status;
 ```
 
-| Code                       | Signification                        |
-| -------------------------- | ------------------------------------ |
-| `SGP40_OK`                 | Succès                               |
-| `SGP40_ERR_NULL_PTR`       | Pointeur NULL passé en argument      |
-| `SGP40_ERR_INVALID_PARAM`  | Paramètre hors plage                 |
-| `SGP40_ERR_NOT_CONFIGURED` | Config HAL/NVIC/DMA absente          |
-| `SGP40_ERR_BUSY`           | Cadence non respectée                |
-| `SGP40_ERR_I2C`            | Erreur bus I2C                       |
-| `SGP40_ERR_CRC`            | CRC-8 invalide sur trame capteur     |
-| `SGP40_ERR_SELF_TEST`      | Auto-test échoué                     |
-| `SGP40_ERR_NOT_READY`      | Capteur non initialisé ou heater off |
-| `SGP40_ERR_TIMEOUT`           | Timeout mesure                                          |
-| `SGP40_ERR_NOT_INITIALIZED`   | Handle non initialisé (SGP40_Init non appelé)           |
-| `SGP40_ERR_OVERFLOW`          | File de mesures async pleine (future use)               |
-| `SGP40_ERR_UNKNOWN`           | Erreur inconnue                                         |
+| Code                        | Signification                                 |
+| --------------------------- | --------------------------------------------- |
+| `SGP40_OK`                  | Succès                                        |
+| `SGP40_ERR_NULL_PTR`        | Pointeur NULL passé en argument               |
+| `SGP40_ERR_INVALID_PARAM`   | Paramètre hors plage                          |
+| `SGP40_ERR_NOT_CONFIGURED`  | Config HAL/NVIC/DMA absente                   |
+| `SGP40_ERR_BUSY`            | Cadence non respectée                         |
+| `SGP40_ERR_I2C`             | Erreur bus I2C                                |
+| `SGP40_ERR_CRC`             | CRC-8 invalide sur trame capteur              |
+| `SGP40_ERR_SELF_TEST`       | Auto-test échoué                              |
+| `SGP40_ERR_NOT_READY`       | Capteur non initialisé ou heater off          |
+| `SGP40_ERR_TIMEOUT`         | Timeout mesure                                |
+| `SGP40_ERR_NOT_INITIALIZED` | Handle non initialisé (SGP40_Init non appelé) |
+| `SGP40_ERR_OVERFLOW`        | File de mesures async pleine (future use)     |
+| `SGP40_ERR_UNKNOWN`         | Erreur inconnue                               |
 
 ---
 
@@ -377,14 +380,16 @@ while (1) {
 
 Dossier : `exemples/` — index détaillé dans `exemples/README.md`.
 
-| Fichier                                | Description                                                      |
-| -------------------------------------- | ---------------------------------------------------------------- |
-| `exemple_sgp40_polling.c`              | Polling de base : mesure simple VOC raw + index (point d'entrée) |
-| `exemple_sgp40_polling_statistiques.c` | Polling avancé : suivi continu + statistiques (min/max/moy)      |
-| `exemple_sgp40_polling_diagnostic.c`   | Polling diagnostic : self-test, compensation, monitoring         |
-| `exemple_sgp40_polling_selftest.c`     | Polling validation complète : serial, self-test, API avancée     |
-| `exemple_sgp40_async_it.c`             | Chaîne asynchrone complète en interruptions I2C                  |
-| `exemple_sgp40_async_multi_capteurs.c` | SGP40 async IT + BME280 sur le même bus I2C partagé (no DMA)     |
+| Fichier                                       | Description                                                      |
+| --------------------------------------------- | ---------------------------------------------------------------- |
+| `exemple_sgp40_polling.c`                     | Polling de base : mesure simple VOC raw + index (point d'entrée) |
+| `exemple_sgp40_polling_statistiques.c`        | Polling avancé : suivi continu + statistiques (min/max/moy)      |
+| `exemple_sgp40_polling_diagnostic.c`          | Polling diagnostic : self-test, compensation, monitoring         |
+| `exemple_sgp40_polling_selftest.c`            | Polling validation complète : serial, self-test, API avancée     |
+| `exemple_sgp40_async_it.c`                    | Chaîne asynchrone complète en interruptions I2C                  |
+| `exemple_sgp40_async_multi_capteurs.c`        | SGP40 async IT + BME280 sur le même bus I2C partagé (no DMA)     |
+| `exemple_sgp40_polling_aht20_compensation.c`  | Polling SGP40 + AHT20 : compensation T/RH en temps réel          |
+| `exemple_sgp40_async_it_aht20_compensation.c` | Async IT SGP40 + AHT20 : compensation T/RH non-bloquante         |
 
 ### Pattern harmonisé (tous les exemples)
 
@@ -432,13 +437,15 @@ SGP40_SetCompensation(&hsgp40, 25.0f, 50.0f);
 Tous les paramètres sont surchargeable via `#define` avant l'inclusion de `STM32_SGP40.h`
 ou via les options de compilation (`-DSGP40_MAX_CONSECUTIVE_ERRORS=5`).
 
-| Macro                          | Défaut | Unité | Description                                         |
-| ------------------------------ | :----: | :---: | --------------------------------------------------- |
-| `SGP40_DEFAULT_TIMEOUT_MS`     | `100`  |  ms   | Timeout I2C pour les transactions bloquantes        |
-| `SGP40_MEASURE_WAIT_MS`        |  `30`  |  ms   | Délai mesure VOC raw (datasheet §5.1)               |
-| `SGP40_SELFTEST_WAIT_MS`       | `320`  |  ms   | Délai auto-test (datasheet §5.2)                    |
-| `SGP40_MAX_CONSECUTIVE_ERRORS` |  `3`   |   —   | Seuil erreurs I2C consécutives avant abandon        |
-| `SGP40_DEBUG_ENABLE`           |   —    |   —   | Active `SGP40_StatusToString()` et les traces série |
+| Macro                          | Défaut | Unité | Description                                                               |
+| ------------------------------ | :----: | :---: | ------------------------------------------------------------------------- |
+| `SGP40_DEFAULT_TIMEOUT_MS`     | `100`  |  ms   | Timeout I2C pour les transactions bloquantes                              |
+| `SGP40_MEASURE_WAIT_MS`        |  `30`  |  ms   | Délai mesure VOC raw (datasheet §5.1)                                     |
+| `SGP40_SELFTEST_WAIT_MS`       | `320`  |  ms   | Délai auto-test (datasheet §5.2)                                          |
+| `SGP40_MAX_CONSECUTIVE_ERRORS` |  `3`   |   —   | Seuil erreurs I2C consécutives avant abandon                              |
+| `SGP40_SERIAL_READ_DELAY_MS`   |  `1`   |  ms   | Délai post-commande GetSerialNumber avant lecture (datasheet §5.3 < 1 ms) |
+| `SGP40_ASYNC_BUSY_RETRY_MS`    |  `2`   |  ms   | Délai retry RX HAL_BUSY (bus partagé multi-capteurs, async IT)            |
+| `SGP40_DEBUG_ENABLE`           |   —    |   —   | Active `SGP40_StatusToString()` et les traces série                       |
 
 > **Production** : `SGP40_DEBUG_ENABLE` doit rester commenté pour économiser la Flash.  
 > Une erreur `HAL_BUSY` ne compte pas comme erreur consécutive.

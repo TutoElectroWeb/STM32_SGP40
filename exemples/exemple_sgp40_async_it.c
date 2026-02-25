@@ -80,7 +80,11 @@ UART_HandleTypeDef huart2;
 /* USER CODE BEGIN PV */
 SGP40_HandleTypeDef hsgp40;                 ///< Handle principal du capteur SGP40
 SGP40_Async_t sgp40_async;                  ///< Contexte de machine d'état asynchrone
-static uint8_t error_count = 0U;            ///< Compteur d'erreurs consécutives
+static uint8_t  error_count           = 0U;  ///< Compteur d'erreurs consécutives (reset sur succès)
+static uint32_t warmup_samples        = 0U;  ///< Échantillons de warmup VOC (initialisé après SGP40_Init)
+static uint32_t warmup_count          = 0U;  ///< Mesures pendant phase warmup
+static uint32_t nominal_count         = 0U;  ///< Mesures nominales post-warmup
+static uint8_t  warmup_done_announced = 0U;  ///< Flag : annonce fin warmup déjà émise (annonce unique)
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -111,14 +115,34 @@ int __io_putchar(int ch) {
 static void SGP40_App_OnDataReady(void *user_ctx, uint16_t voc_raw, SGP40_Status status)
 {
   (void)user_ctx;
-  (void)voc_raw;
-  (void)status;
+  if (status != SGP40_OK) { return; }                                          // Données invalides si status != OK
+  uint16_t voc_index = 0U;
+  if (SGP40_CalculateVOCIndex(&hsgp40, voc_raw, &voc_index) != SGP40_OK) { return; }
+  error_count = 0U;                                                             // Succès : remet le compteur d'erreurs à zéro
+  if (!SGP40_IsVOCWarmupComplete(&hsgp40)) {                                   // Warmup algorithme VOC non terminé
+    warmup_count++;                                                             // Incrémente les relevés warmup
+    printf("[#%lu] OK  VOC raw=%u | index=%u | Non disponible (warmup)\r\n",
+           warmup_count, voc_raw, voc_index);
+    printf("Etat algo  : warmup (%lu/%lu)\r\n", warmup_count, warmup_samples);
+  } else {                                                                      // Warmup terminé — mesures nominales
+    if (!warmup_done_announced) {                                               // Annonce unique de fin de warmup
+      nominal_count = 0U;                                                       // Remise à zéro des relevés nominaux
+      printf("INFO  Warmup terminé, relevés remis à zéro\r\n");
+      warmup_done_announced = 1U;
+    }
+    nominal_count++;                                                            // Incrémente les relevés nominaux
+    SGP40_VOC_Category cat = SGP40_GetVOCCategory(voc_index);
+    printf("[#%lu] OK  VOC raw=%u | index=%u | %s\r\n",
+           nominal_count, voc_raw, voc_index, SGP40_VOCCategoryToString(cat));
+  }
 }
 
 static void SGP40_App_OnError(void *user_ctx, SGP40_Status status)
 {
   (void)user_ctx;
-  (void)status;
+  error_count++;                                                                // Incrémente le compteur d'erreurs consécutives
+  printf("ERREUR  Async [%u/%u]: %s\r\n",
+         error_count, SGP40_MAX_CONSECUTIVE_ERRORS, SGP40_StatusToString(status));
 }
 
 static void SGP40_App_OnIrqDataReady(void *user_ctx)
@@ -234,10 +258,7 @@ int main(void)
   printf("   Validation MX (I2C/IRQ) effectuée par la librairie\r\n\r\n");        // Config NVIC/I2C validée par la lib au premier appel
 
   /* 5) Paramètres runtime de la boucle principale */
-  const uint32_t warmup_samples = SGP40_GetVOCWarmupSamples(&hsgp40);                    // Durée de warmup en échantillons
-  uint32_t warmup_count = 0U;                                                             // Compteur de mesures pendant blackout/warmup
-  uint32_t nominal_count = 0U;                                                            // Compteur de mesures nominales (remis à zéro après blackout)
-  uint8_t warmup_done_announced = 0U;                                                     // Empêche de répéter l'annonce de fin warmup
+  warmup_samples = SGP40_GetVOCWarmupSamples(&hsgp40);                                    // Initialise la durée de warmup (utilisée dans OnDataReady)
   printf("Note: phase warmup algorithme VOC = %lu secondes\r\n\r\n", warmup_samples);     // Informe la durée de warmup
 
   /* USER CODE END 2 */
@@ -250,69 +271,28 @@ int main(void)
 
       /* Ne pas appeler SGP40_ReadAll() depuis le while(1) — mélange polling/async
        * interdit (voir guard async_busy dans la lib). Utiliser TriggerEvery() uniquement.
-       *
        * TriggerEvery déclenche ReadAll_IT() seulement si FSM IDLE + intervalle écoulé.
-       * Si une autre lib async IT (STM32_AHT20, STM32_BME280...) occupe le bus,
-       * HAL_BUSY est reçu → FSM reste IDLE → retry automatique au cycle suivant. */
-      SGP40_Async_TriggerEvery(&sgp40_async, now, &last_trigger);
+       * Si une autre lib async IT occupe le bus, HAL_BUSY → FSM reste IDLE → retry auto. */
+      SGP40_Async_TriggerEvery(&sgp40_async, now, &last_trigger); // Déclenche ReadAll_IT si idle + intervalle écoulé
+      SGP40_Async_Process(&sgp40_async, now);                      // Avance FSM + appelle OnDataReady/OnError via callbacks
 
-      /* Avance FSM, lit flags async et consomme les données via API explicite. */
-      SGP40_Async_Process(&sgp40_async, now);           /* void depuis v0.9 — statut via ctx->last_status */
-
-      if (SGP40_Async_ErrorFlag(&sgp40_async)) {
-        error_count++;
+      if (SGP40_Async_ErrorFlag(&sgp40_async)) {                   // Erreur détectée → nettoie la FSM
         SGP40_Async_ClearFlags(&sgp40_async);
-        SGP40_Async_Reset(&sgp40_async);   // Remet FSM à IDLE (async_busy=0)
-
-        if (error_count >= SGP40_MAX_CONSECUTIVE_ERRORS) {
-          // Seuil configurable via STM32_SGP40_conf.h. Réinitialiser le handle.
+        SGP40_Async_Reset(&sgp40_async);                           // Remet FSM à IDLE (async_busy=0)
+        if (error_count >= SGP40_MAX_CONSECUTIVE_ERRORS) {         // Seuil configurable via STM32_SGP40_conf.h
           printf("ERREUR  Erreur I2C repetee [%u/%u] — DeInit + redemarrage\r\n",
                  error_count, SGP40_MAX_CONSECUTIVE_ERRORS);
           SGP40_DeInit(&hsgp40);
           Error_Handler();
-        } else {
-          printf("ERREUR  Erreur async [%u/%u] -> reset FSM\r\n",
-                 error_count, SGP40_MAX_CONSECUTIVE_ERRORS);
         }
       }
 
-      if (SGP40_Async_DataReadyFlag(&sgp40_async) || SGP40_Async_HasData(&sgp40_async)) {
-        uint16_t voc_raw = 0U;
-        uint16_t voc_index = 0U;
-        SGP40_Status get_status = SGP40_Async_GetData(&sgp40_async, &voc_raw);
-        SGP40_Async_ClearFlags(&sgp40_async);
-
-        if (get_status == SGP40_OK && SGP40_CalculateVOCIndex(&hsgp40, voc_raw, &voc_index) == SGP40_OK) {
-          error_count = 0U;
-
-          if (!SGP40_IsVOCWarmupComplete(&hsgp40)) {
-            warmup_count++;
-            printf("[#%lu] OK  VOC raw=%u | index=%u | Non disponible (warmup)\r\n",
-                   warmup_count, voc_raw, voc_index);
-            printf("Etat algo  : warmup (%lu/%lu)\r\n", warmup_count, warmup_samples);
-          } else {
-            if (!warmup_done_announced) {
-              nominal_count = 0U;
-              printf("INFO  Warmup terminé, relevés remis à zéro\r\n");
-              warmup_done_announced = 1U;
-            }
-            nominal_count++;
-            SGP40_VOC_Category cat = SGP40_GetVOCCategory(voc_index);
-            printf("[#%lu] OK  VOC raw=%u | index=%u | %s\r\n",
-                   nominal_count, voc_raw, voc_index, SGP40_VOCCategoryToString(cat));
-          }
-        }
-      }
-
-      /* Zone applicative non bloquante — autres capteurs async IT sur le même bus :
-       * appeler leurs Tick() ici, les callbacks se dispatchent automatiquement.
-       * Ex: AHT20_Async_TriggerEvery(&haht20_async, now, &last_aht20);  (intervalle via haht20_ctx.sample_interval_ms)
-       *     AHT20_Async_TickIndex(&haht20_async, now, &temp_raw, &temp_c);
-       */
-
-      /* Simulation d'une tâche applicative bloquante (ex: envoi réseau, calcul lourd) */
-      HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
-      HAL_Delay(1000U); // Délai bloquant de 1s pour prouver que l'IT tourne en tâche de fond
+      /* Tâche applicative non bloquante — LED heartbeat + délai simulant une charge CPU.
+       * D'autres libs async IT (AHT20, BME280...) peuvent être appelées ici :
+       *   AHT20_Async_TriggerEvery(&haht20_async, now, &last_aht20);
+       *   AHT20_Async_TickIndex(&haht20_async, now, &temp_raw, &temp_c); */
+      HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);                  // LED heartbeat
+      HAL_Delay(1000U);                                            // Délai 1s : prouve que l'IT tourne en tâche de fond
     
   /* USER CODE END WHILE */
   }
@@ -519,11 +499,12 @@ void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c) {
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
-    __disable_irq();                                                        // Désactive les interruptions avant la boucle d'erreur
-    while (1)                                                               // Boucle d'erreur bloquante
+    /* Handler d'erreur bloquant: LED clignotante pour diagnostic visuel. */
+    __disable_irq();
+    while (1)  // Boucle d'erreur bloquante
     {
       HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);                           // Fait clignoter la LED d'erreur
-      for (volatile uint32_t wait = 0U; wait < 100000U; ++wait) {          // Temporisation locale sans HAL_Delay
+      for (volatile uint32_t wait = 0U; wait < 250000U; ++wait) {          // Temporisation locale 250ms sans HAL_Delay
         __NOP();                                                            // Occupation CPU minimale pour espacer le clignotement
       }
     }

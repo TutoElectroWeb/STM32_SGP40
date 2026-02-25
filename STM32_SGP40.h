@@ -177,7 +177,7 @@ typedef struct {
      */
     volatile uint8_t async_busy;
 } SGP40_Handle_t;
-typedef SGP40_Handle_t SGP40_HandleTypeDef; ///< Alias CubeMX-style
+
 
 /**
  * @brief Résultat de SGP40_Async_Tick() — remplace le polling manuel dans while(1)
@@ -203,6 +203,17 @@ typedef enum {
     SGP40_VOC_UNHEALTHY,       ///< 301-500 : Insalubre
     SGP40_VOC_INVALID          ///< Hors plage / erreur
 } SGP40_VOC_Category;
+
+/**
+ * @brief Données métier SGP40 — résultat d'une mesure complète
+ *
+ * Regroupe le signal brut et le VOC Index calculé pour un usage simplifié
+ * dans la boucle principale (pattern @c PREFIX_ReadAll).
+ */
+typedef struct {
+    uint16_t voc_raw;    ///< Signal brut SRAW_VOC [0..65535]
+    uint16_t voc_index;  ///< VOC Index [0..500] (0 pendant blackout algo)
+} SGP40_Data;
 
 /* =============================================================================
  * Async (non-bloquant IT)
@@ -544,6 +555,17 @@ uint32_t SGP40_GetVOCWarmupSamples(const SGP40_Handle_t *hsgp40);
  */
 SGP40_Status SGP40_MeasureVOCIndex(SGP40_Handle_t *hsgp40, uint16_t *voc_raw, uint16_t *voc_index);
 
+/**
+ * @brief Mesure complète VOC (raw + index) stockée dans une struct métier
+ * @param hsgp40   Handle SGP40 (non NULL, initialisé)
+ * @param data_out Pointeur vers SGP40_Data à remplir (non NULL)
+ * @retval SGP40_Status
+ * @note  Bloquant ~SGP40_MEASURE_WAIT_MS. Wrapper de SGP40_MeasureVOCIndex().
+ * @pre   hsgp40 non NULL, data_out non NULL
+ * @post  data_out->voc_raw et data_out->voc_index remplis si SGP40_OK
+ */
+SGP40_Status SGP40_ReadAll(SGP40_Handle_t *hsgp40, SGP40_Data *data_out);
+
 /* =============================================================================
  * API Asynchrone (IT)
  * ============================================================================= */
@@ -559,9 +581,13 @@ void SGP40_Async_Init(SGP40_Async_t *ctx, SGP40_Handle_t *hsgp40);
 /**
  * @brief Reset la machine d'état async sans perdre les callbacks/timebase
  * @param ctx Contexte async (non NULL)
+ * @pre   ctx non NULL (comportement indéfini sinon)
+ * @post  ctx->state == SGP40_ASYNC_IDLE
+ * @post  ctx->hsgp40->async_busy == 0  (libère le guard polling)
  * @note  Préserve : hsgp40, hi2c, tous les callbacks, user_ctx.
  *        Remet : state=IDLE, flags=false, buffers=0, deadlines=0.
  *        Utile pour récupération d'erreur sans ré-appeler Init+SetCallbacks.
+ * @warning ⚠️ Abandonne toute mesure en cours — appeler uniquement depuis main loop.
  */
 void SGP40_Async_Reset(SGP40_Async_t *ctx);
 
@@ -626,8 +652,14 @@ bool SGP40_Async_HasData(const SGP40_Async_t *ctx);
 
 /**
  * @brief Déclenche mesure VOC en mode IT (non-bloquant)
- * @param ctx Contexte async
- * @retval SGP40_Status (SGP40_OK si lancé, erreur sinon)
+ * @param ctx Contexte async (non NULL, SGP40_Async_Init() préalablement appelé)
+ * @pre   ctx->hsgp40->initialized == true  (SGP40_Init() réussi)
+ * @pre   NVIC activé pour le périphérique I2C utilisé
+ * @pre   HAL_GetTick() monotone (non réinitialisé entre deux appels)
+ * @post  ctx->state == SGP40_ASYNC_TX (ou SGP40_ASYNC_IDLE si HAL_BUSY — normal sur bus partagé)
+ * @retval SGP40_OK             mesure lancée
+ * @retval SGP40_ERR_BUSY       FSM non idle (mesure déjà en cours)
+ * @retval SGP40_ERR_I2C        erreur HAL I2C (hors HAL_BUSY)
  * @note  Utilise HAL_I2C_Master_Transmit_IT. DMA non implémenté : aucun gain
  *        pour les trames SGP40 (8B TX / 3B RX) — IT suffit sans surcoût DMA.
  */
@@ -635,8 +667,10 @@ SGP40_Status SGP40_ReadAll_IT(SGP40_Async_t *ctx);
 
 /**
  * @brief Machine d'état async — à appeler dans main loop
- * @param ctx    Contexte async
+ * @param ctx    Contexte async (non NULL)
  * @param now_ms Temps actuel HAL_GetTick()
+ * @pre   now_ms monotone sur Cortex-M (uint32_t, wraparound géré par soustraction non signée)
+ * @pre   Appelé exclusivement depuis la main loop (jamais depuis IRQ)
  * @retval None — consulter ctx->last_status ou SGP40_Async_GetTickResult() pour le statut
  * @note  Gère transitions d'état, timeouts, et appelle callbacks utilisateur.
  *        Ne remet pas automatiquement l'état à IDLE après DONE.
@@ -654,8 +688,10 @@ SGP40_Status SGP40_Async_GetData(SGP40_Async_t *ctx, uint16_t *voc_raw);
 
 /**
  * @brief Callback HAL - Tx I2C terminé (mode IT)
- * @param ctx  Contexte async
- * @param hi2c Handle I2C
+ * @param ctx  Contexte async (non NULL)
+ * @param hi2c Handle I2C ayant déclenché l'IRQ
+ * @pre   Appelé exclusivement depuis le contexte IRQ HAL (HAL_I2C_MasterTxCpltCallback)
+ * @post  ctx->state == SGP40_ASYNC_RX si hi2c correspond, inchangé sinon
  * @note  À appeler depuis HAL_I2C_MasterTxCpltCallback.
  *        Filtre sur hi2c : ignore si différent du handle configuré.
  */
@@ -663,8 +699,11 @@ void SGP40_Async_OnI2CMasterTxCplt(SGP40_Async_t *ctx, I2C_HandleTypeDef *hi2c);
 
 /**
  * @brief Callback HAL - Rx I2C terminé (mode IT)
- * @param ctx  Contexte async
- * @param hi2c Handle I2C
+ * @param ctx  Contexte async (non NULL)
+ * @param hi2c Handle I2C ayant déclenché l'IRQ
+ * @pre   Appelé exclusivement depuis le contexte IRQ HAL (HAL_I2C_MasterRxCpltCallback)
+ * @pre   ctx->rx_buf dimensionné à ≥ 3 octets (2B data + 1B CRC — §4.5 SGP40 datasheet)
+ * @post  notify_data_pending == true (si CRC OK) ou notify_error_pending == true
  * @note  À appeler depuis HAL_I2C_MasterRxCpltCallback.
  *        Filtre sur hi2c : ignore si différent du handle configuré.
  */
@@ -672,8 +711,10 @@ void SGP40_Async_OnI2CMasterRxCplt(SGP40_Async_t *ctx, I2C_HandleTypeDef *hi2c);
 
 /**
  * @brief Callback HAL - Erreur I2C
- * @param ctx  Contexte async
- * @param hi2c Handle I2C
+ * @param ctx  Contexte async (non NULL)
+ * @param hi2c Handle I2C ayant déclenché l'IRQ
+ * @pre   Appelé exclusivement depuis le contexte IRQ HAL (HAL_I2C_ErrorCallback)
+ * @post  notify_error_pending == true si hi2c correspond
  * @note  À appeler depuis HAL_I2C_ErrorCallback.
  *        Filtre sur hi2c : ignore si différent du handle configuré.
  */

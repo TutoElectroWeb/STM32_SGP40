@@ -8,16 +8,16 @@ Emplacement : `Drivers/STM32_SGP40/exemples/`
 
 ## Fichiers
 
-| Fichier                                      | Objectif                                                                                       | Difficulté    |
-| -------------------------------------------- | ---------------------------------------------------------------------------------------------- | ------------- |
-| `exemple_sgp40_polling.c`                    | Polling de base : init → mesure raw → VOC index → catégorie                                    | Débutant      |
-| `exemple_sgp40_polling_statistiques.c`       | Polling avancé : suivi continu + stats min/max/moy + serial number                             | Intermédiaire |
-| `exemple_sgp40_polling_diagnostic.c`         | Polling diagnostic complet : self-test, compensation, monitoring                               | Intermédiaire |
-| `exemple_sgp40_polling_selftest.c`           | Polling validation capteur : serial, self-test, API avancée VOC, heater off/re-init + synthèse | Avancé        |
-| `exemple_sgp40_async_it.c`                   | Chaîne asynchrone complète en interruptions I2C                                                | Avancé        |
-| `exemple_sgp40_async_multi_capteurs.c`       | SGP40 async IT + BME280 polling sur le même bus I2C (partage coopératif)                       | Avancé        |
-| `exemple_sgp40_polling_aht20_compensation.c` | Polling SGP40 + AHT20 : compensation T/RH en temps réel                                        | Intermédiaire |
-| `exemple_sgp40_async_aht20_compensation.c`   | Async IT SGP40 + AHT20 : compensation T/RH non-bloquante sur bus partagé                       | Avancé        |
+| Fichier                                       | Objectif                                                                                       | Difficulté    |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------- | ------------- |
+| `exemple_sgp40_polling.c`                     | Polling de base : init → mesure raw → VOC index → catégorie                                    | Débutant      |
+| `exemple_sgp40_polling_statistiques.c`        | Polling avancé : suivi continu + stats min/max/moy + serial number                             | Intermédiaire |
+| `exemple_sgp40_polling_diagnostic.c`          | Polling diagnostic complet : self-test, compensation, monitoring                               | Intermédiaire |
+| `exemple_sgp40_polling_selftest.c`            | Polling validation capteur : serial, self-test, API avancée VOC, heater off/re-init + synthèse | Avancé        |
+| `exemple_sgp40_async_it.c`                    | Chaîne asynchrone complète en interruptions I2C                                                | Avancé        |
+| `exemple_sgp40_async_multi_capteurs.c`        | SGP40 async IT + BME280 polling sur le même bus I2C (partage coopératif)                       | Avancé        |
+| `exemple_sgp40_polling_aht20_compensation.c`  | Polling SGP40 + AHT20 : compensation T/RH en temps réel                                        | Intermédiaire |
+| `exemple_sgp40_async_it_aht20_compensation.c` | Async IT SGP40 + AHT20 : compensation T/RH non-bloquante sur bus partagé                       | Avancé        |
 
 ---
 
@@ -104,7 +104,7 @@ La bibliothèque utilise `HAL_GetTick()` et `HAL_Delay()` en interne — aucun w
 ### API asynchrone IT (mode IT uniquement — DMA non implémenté, aucun gain sur 3-8 octets)
 
 | API                             | async_it | multi_capt | aht20_async |
-| ------------------------------- | :------: | :--------: | :---------: |
+| ------------------------------- | :------: | :--------: | :---------: | ----------------------------------------- |
 | `SGP40_Async_Init`              |    x     |     x      |      x      |
 | `SGP40_Async_Reset`             |    x     |            |             |
 | `SGP40_Async_SetCallbacks`      |    x     |            |             |
@@ -118,6 +118,7 @@ La bibliothèque utilise `HAL_GetTick()` et `HAL_Delay()` en interne — aucun w
 | `SGP40_Async_HasData`           |    x     |            |             |
 | `SGP40_Async_GetData`           |    x     |            |             |
 | `SGP40_Async_TriggerEvery`      |    x     |     x      |      x      |
+| `SGP40_Async_Tick`              |          |            |      x      | _(couvert via `TickIndex` dans async_it)_ |
 | `SGP40_Async_TickIndex`         |    x     |     x      |      x      |
 | `SGP40_Async_OnI2CMasterTxCplt` |    x     |     x      |      x      |
 | `SGP40_Async_OnI2CMasterRxCplt` |    x     |     x      |      x      |
@@ -127,6 +128,7 @@ La bibliothèque utilise `HAL_GetTick()` et `HAL_Delay()` en interne — aucun w
 
 ## Conventions
 
+- `PrintPhase()` est une fonction locale dans `exemple_sgp40_polling.c` (affiche une bannière de phase console) — conservée pour la lisibilité pédagogique de l'exemple de base, non dupliquée dans les autres fichiers.
 - Tous les exemples sont des templates CubeMX (`main.c`) avec zones `USER CODE BEGIN/END`
 - Aucun `HAL_Delay` après `__disable_irq()` dans `Error_Handler` (busy-wait volatile)
 - Toutes les temporisations utilisent `HAL_Delay()` directement (la lib gère son timing en interne)
@@ -139,5 +141,7 @@ La bibliothèque utilise `HAL_GetTick()` et `HAL_Delay()` en interne — aucun w
 Pour un projet final, conservez la logique métier et adaptez :
 
 1. Le bus I2C dans `SGP40_Init()` (ex: `&hi2c1` au lieu de `&hi2c3`)
-2. Les paramètres UART si console différente
-3. La config CubeMX (I2C / UART / DMA / NVIC) selon votre carte
+2. L'intervalle de mesure via `SGP40_SetSampleInterval()` (par défaut 1000 ms — abaisser à 250 ms possible si la datasheet le permet)
+3. Les valeurs de compensation T/RH via `SGP40_SetCompensation()` (connecter un AHT20 ou BME280 pour la compensation réelle)
+4. Le seuil d'erreurs consécutives via `SGP40_MAX_CONSECUTIVE_ERRORS` dans `STM32_SGP40_conf.h`
+5. Les paramètres UART si console différente

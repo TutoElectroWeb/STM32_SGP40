@@ -34,6 +34,7 @@ _Static_assert(sizeof(GasIndexAlgorithmParams) == SGP40_VOC_ALGO_OPAQUE_SIZE,
  * Private function prototypes
  * ============================================================================ */
 static uint8_t SGP40_CalculateCRC8(const uint8_t *data, size_t len);
+static SGP40_Status SGP40_MapHalStatus(HAL_StatusTypeDef hal_status);
 static SGP40_Status SGP40_WriteCommand(SGP40_Handle_t *hsgp40, uint16_t cmd);
 static SGP40_Status SGP40_WriteCommandWithData(SGP40_Handle_t *hsgp40, uint16_t cmd, const uint8_t *data, size_t data_len);
 static SGP40_Status SGP40_ReadData(SGP40_Handle_t *hsgp40, uint8_t *data, size_t len);
@@ -69,6 +70,21 @@ static uint8_t SGP40_CalculateCRC8(const uint8_t *data, size_t len) {
 }
 
 /**
+ * @brief Convertit un statut HAL I2C en code statut SGP40
+ * @param hal_status Code de retour HAL
+ * @retval SGP40_Status
+ */
+static SGP40_Status SGP40_MapHalStatus(HAL_StatusTypeDef hal_status) {
+    if (hal_status == HAL_BUSY) {
+        return SGP40_ERR_BUSY;
+    }
+    if (hal_status == HAL_TIMEOUT) {
+        return SGP40_ERR_TIMEOUT;
+    }
+    return SGP40_ERR_I2C;
+}
+
+/**
  * @brief Envoie commande 16 bits (MSB first)
  * @param hsgp40 Handle SGP40
  * @param cmd    Commande 16 bits
@@ -95,10 +111,11 @@ static SGP40_Status SGP40_WriteCommand(SGP40_Handle_t *hsgp40, uint16_t cmd) {
     if (hal_status != HAL_OK) {                        // Erreur de transmission
         hsgp40->last_hal_error = HAL_I2C_GetError(hsgp40->hi2c); // Code HAL bas niveau
         hsgp40->consecutive_errors++;                  // Erreur consécutive comptabilisée
-        hsgp40->last_error = SGP40_ERR_I2C;
-        return SGP40_ERR_I2C;
+        hsgp40->last_error = SGP40_MapHalStatus(hal_status);
+        return hsgp40->last_error;
     }
 
+    hsgp40->last_hal_error = 0U;
     hsgp40->consecutive_errors = 0;                    // Succès : remet le compteur à zéro
     return SGP40_OK;
 }
@@ -141,10 +158,11 @@ static SGP40_Status SGP40_WriteCommandWithData(SGP40_Handle_t *hsgp40, uint16_t 
     if (hal_status != HAL_OK) {                        // Erreur de transmission
         hsgp40->last_hal_error = HAL_I2C_GetError(hsgp40->hi2c);
         hsgp40->consecutive_errors++;
-        hsgp40->last_error = SGP40_ERR_I2C;
-        return SGP40_ERR_I2C;
+        hsgp40->last_error = SGP40_MapHalStatus(hal_status);
+        return hsgp40->last_error;
     }
 
+    hsgp40->last_hal_error = 0U;
     hsgp40->consecutive_errors = 0;                    // Succès TX
     return SGP40_OK;
 }
@@ -177,8 +195,8 @@ static SGP40_Status SGP40_ReadData(SGP40_Handle_t *hsgp40, uint8_t *data, size_t
     if (hal_status != HAL_OK) {                        // Erreur de réception
         hsgp40->last_hal_error = HAL_I2C_GetError(hsgp40->hi2c);
         hsgp40->consecutive_errors++;
-        hsgp40->last_error = SGP40_ERR_I2C;
-        return SGP40_ERR_I2C;
+        hsgp40->last_error = SGP40_MapHalStatus(hal_status);
+        return hsgp40->last_error;
     }
 
     // Vérification CRC pour chaque mot (2 bytes + CRC)
@@ -191,6 +209,7 @@ static SGP40_Status SGP40_ReadData(SGP40_Handle_t *hsgp40, uint8_t *data, size_t
         }
     }
 
+    hsgp40->last_hal_error = 0U;
     hsgp40->consecutive_errors = 0;                    // Toutes données valides : reset erreurs
     return SGP40_OK;
 }
@@ -314,6 +333,8 @@ SGP40_Status SGP40_GetSerialNumber(SGP40_Handle_t *hsgp40, uint64_t *serial) {
         return SGP40_ERR_NULL_PTR;
     }
 
+    *serial = 0U;
+
     if (hsgp40->async_busy) {                          // Guard : interdit si async en cours
         return SGP40_ERR_BUSY;
     }
@@ -357,6 +378,8 @@ SGP40_Status SGP40_SelfTest(SGP40_Handle_t *hsgp40, uint16_t *test_result) {
         return SGP40_ERR_NULL_PTR;
     }
 
+    *test_result = 0U;
+
     if (hsgp40->async_busy) {                          // Guard : interdit si async en cours
         return SGP40_ERR_BUSY;
     }
@@ -398,6 +421,8 @@ SGP40_Status SGP40_MeasureRaw(SGP40_Handle_t *hsgp40, uint16_t *voc_raw) {
     if (!hsgp40 || !voc_raw) {
         return SGP40_ERR_NULL_PTR;
     }
+
+    *voc_raw = 0U;
 
     if (!hsgp40->initialized) {
         return SGP40_ERR_NOT_INITIALIZED;              // SGP40_Init() non appelé ou HeaterOff() effectué
@@ -844,6 +869,13 @@ SGP40_Status SGP40_MeasureVOCIndex(SGP40_Handle_t *hsgp40, uint16_t *voc_raw, ui
     }
 
     return SGP40_CalculateVOCIndex(hsgp40, raw, voc_index);
+}
+
+SGP40_Status SGP40_ReadAll(SGP40_Handle_t *hsgp40, SGP40_Data *data_out) {
+    if (!hsgp40 || !data_out) {
+        return SGP40_ERR_NULL_PTR;
+    }
+    return SGP40_MeasureVOCIndex(hsgp40, &data_out->voc_raw, &data_out->voc_index);
 }
 
 /* =============================================================================

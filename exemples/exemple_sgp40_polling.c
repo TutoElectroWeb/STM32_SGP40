@@ -409,7 +409,7 @@ void Error_Handler(void)
     while (1)  // Boucle d'erreur bloquante
     {
       HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);                           // Fait clignoter la LED d'erreur
-      for (volatile uint32_t wait = 0U; wait < 100000U; ++wait) {          // Temporisation locale sans HAL_Delay
+      for (volatile uint32_t wait = 0U; wait < 250000U; ++wait) {          // Temporisation locale 250ms sans HAL_Delay
         __NOP();                                                            // Occupation CPU minimale pour espacer le clignotement
       }
     }

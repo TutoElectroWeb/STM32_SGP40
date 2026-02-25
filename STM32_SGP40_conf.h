@@ -37,7 +37,7 @@
  *
  * @note  SGP40_StatusToString() retourne "" (chaîne vide) si non défini.
  */
-#define SGP40_DEBUG_ENABLE
+/* #define SGP40_DEBUG_ENABLE */   /* Décommenter pour activer */
 
 /* =============================================================================
  * Timeouts I2C (ms)
