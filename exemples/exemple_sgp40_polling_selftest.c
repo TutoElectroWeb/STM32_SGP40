@@ -26,7 +26,7 @@
  * - API couverte : SGP40_Init, SGP40_GetSerialNumber, SGP40_Init,
  *   SGP40_SelfTest, SGP40_MeasureRaw, SGP40_SetCompensation,
  *   SGP40_SetSampleInterval, SGP40_PrimeForVocIndex, SGP40_HeaterOff,
- *   SGP40_CalculateVOCIndex, SGP40_GetVOCCategory, SGP40_VOCCategoryToString,
+ *   SGP40_SoftReset, SGP40_CalculateVOCIndex, SGP40_GetVOCCategory, SGP40_VOCCategoryToString,
  *   SGP40_StatusToString,
  *   SGP40_VOCAlgoReset/GetStates/SetStates/GetTuning/SetTuning/GetSamplingInterval.
  ******************************************************************************
@@ -60,7 +60,7 @@ I2C_HandleTypeDef hi2c3;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-SGP40_HandleTypeDef hsgp40;  ///< Handle principal du capteur SGP40
+SGP40_Handle_t hsgp40;  ///< Handle principal du capteur SGP40
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -185,12 +185,12 @@ int main(void)
     status = SGP40_SelfTest(&hsgp40, &test_result);                                      // Lance l'auto-test interne SGP40
 
     if (status != SGP40_OK) {  // Vérifie le résultat du self-test interne
-        printf("ERREUR  Auto-test ÉCHOUÉ\r\n");
-      printf("   Résultat: 0x%04X (attendu: pattern 0xD4XX)\r\n", test_result);
+        printf("ERREUR  Auto-test ECHOUE\r\n");
+      printf("   Resultat: 0x%04X (attendu: 0xD400 — §5.2 datasheet)\r\n", test_result);
         printf("   Statut  : %s\r\n\r\n", SGP40_StatusToString(status));
     } else {
-        printf("OK  Auto-test RÉUSSI\r\n");
-        printf("   Résultat: 0x%04X (heater + sensor OK)\r\n\r\n", test_result);
+        printf("OK  Auto-test REUSSI\r\n");
+        printf("   Resultat: 0x%04X == 0xD400 (heater + sensor OK — §5.2)\r\n\r\n", test_result);
     }
     HAL_Delay(500U);
 

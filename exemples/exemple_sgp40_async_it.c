@@ -78,7 +78,7 @@ I2C_HandleTypeDef hi2c3;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-SGP40_HandleTypeDef hsgp40;                 ///< Handle principal du capteur SGP40
+SGP40_Handle_t hsgp40;                 ///< Handle principal du capteur SGP40
 SGP40_Async_t sgp40_async;                  ///< Contexte de machine d'état asynchrone
 static uint8_t  error_count           = 0U;  ///< Compteur d'erreurs consécutives (reset sur succès)
 static uint32_t warmup_samples        = 0U;  ///< Échantillons de warmup VOC (initialisé après SGP40_Init)

@@ -58,8 +58,8 @@ I2C_HandleTypeDef hi2c3;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-SGP40_HandleTypeDef hsgp40;  ///< Handle principal du capteur SGP40
-AHT20_HandleTypeDef haht20;  ///< Handle du capteur AHT20 (source T/RH de compensation)
+SGP40_Handle_t hsgp40;  ///< Handle principal du capteur SGP40
+AHT20_Handle_t haht20;  ///< Handle du capteur AHT20 (source T/RH de compensation)
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/

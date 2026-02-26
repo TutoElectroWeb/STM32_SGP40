@@ -37,7 +37,7 @@ Tous les exemples suivent le même schéma d'initialisation :
 
 ```c
 /* PV — Variables globales */
-SGP40_HandleTypeDef hsgp40;  ///< Handle principal du capteur SGP40
+SGP40_Handle_t hsgp40;  ///< Handle principal du capteur SGP40
 
 /* main() — USER CODE 2 */
 SGP40_Status init_status = SGP40_Init(&hsgp40, &hi2c3);

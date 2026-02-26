@@ -68,7 +68,7 @@ I2C_HandleTypeDef hi2c3;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-SGP40_HandleTypeDef hsgp40;  ///< Handle principal du capteur SGP40
+SGP40_Handle_t hsgp40;  ///< Handle principal du capteur SGP40
 VOC_Stats stats = {0};       ///< Structure globale d'agrégation statistique
 /* USER CODE END PV */
 

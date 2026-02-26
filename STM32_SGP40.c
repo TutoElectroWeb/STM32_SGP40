@@ -18,7 +18,8 @@
  * Private defines
  * ============================================================================ */
 #define SGP40_SERIAL_SIZE       9       ///< Serial: 3 words (2 bytes + CRC chaque)
-#define SGP40_TEST_OK_VALUE     0xD400U ///< Valeur attendue auto-test
+#define SGP40_TEST_OK_VALUE     0xD400U ///< Valeur attendue auto-test (datasheet §5.2 : octet bas toujours 0x00)
+#define SGP40_TEST_FAIL_VALUE   0x4B00U ///< Valeur échec auto-test (datasheet §5.2)
 
 /** @brief Accès typé au buffer opaque algo VOC dans un handle SGP40.
  *  Évite l'exposition de GasIndexAlgorithmParams dans le .h public.
@@ -369,8 +370,11 @@ SGP40_Status SGP40_GetSerialNumber(SGP40_Handle_t *hsgp40, uint64_t *serial) {
 /**
  * @brief Auto-test capteur (heater + sensor)
  * @param hsgp40      Handle SGP40
- * @param test_result Résultat test (pattern 0xD4XX = OK, 0x4BXX = échec)
- * @retval SGP40_Status
+ * @param test_result Résultat brut — SGP40_TEST_RESULT_OK (0xD400) = OK,
+ *                    SGP40_TEST_RESULT_FAIL (0x4B00) = échec.
+ *                    Datasheet §5.2 : octet bas toujours 0x00.
+ * @retval SGP40_OK            si *test_result == 0xD400
+ * @retval SGP40_ERR_SELF_TEST si *test_result != 0xD400
  * @note  Bloquant jusqu'à SGP40_SELFTEST_WAIT_MS (320 ms).
  */
 SGP40_Status SGP40_SelfTest(SGP40_Handle_t *hsgp40, uint16_t *test_result) {
@@ -399,7 +403,7 @@ SGP40_Status SGP40_SelfTest(SGP40_Handle_t *hsgp40, uint16_t *test_result) {
 
     *test_result = (uint16_t)((buf[0] << 8) | buf[1]); // Assemble résultat 16 bits
 
-    if ((*test_result & 0xFF00u) != SGP40_TEST_OK_VALUE) {  // vérifie pattern 0xD400 (OK)
+    if (*test_result != SGP40_TEST_OK_VALUE) {              // vérifie valeur exacte 0xD400 (datasheet §5.2 : octet bas toujours 0x00)
         hsgp40->consecutive_errors++;
         hsgp40->last_error = SGP40_ERR_SELF_TEST;
         return SGP40_ERR_SELF_TEST;
@@ -594,6 +598,64 @@ SGP40_Status SGP40_HeaterOff(SGP40_Handle_t *hsgp40) {
     }
 
     return status;
+}
+
+/**
+ * @brief Soft Reset via I2C General Call (réinitialise TOUS les périphériques I2C du bus)
+ * @param hsgp40 Handle SGP40 (pour accéder à hi2c et i2c_timeout)
+ * @retval SGP40_OK              Reset envoyé avec succès
+ * @retval SGP40_ERR_NULL_PTR    hsgp40 NULL
+ * @retval SGP40_ERR_NOT_CONFIGURED  hi2c non configuré
+ * @retval SGP40_ERR_BUSY        async en cours
+ * @retval SGP40_ERR_TIMEOUT     timeout I2C (bus bloqué)
+ * @warning ⚠️  Reset I2C General Call (addr 0x00) : TOUS les périphériques I2C
+ *          du bus sont réinitialisés, pas uniquement le SGP40.
+ * @note   Implémente sensirion_i2c_general_call_reset() du driver Sensirion RPi.
+ *         Certains périphériques n'ACK pas la General Call → HAL_ERROR peut
+ *         survenir même si le reset a été exécuté (retour SGP40_OK conservatoire).
+ *         Après appel, le SGP40 est en état POR → appeler SGP40_Init() avant usage.
+ */
+SGP40_Status SGP40_SoftReset(SGP40_Handle_t *hsgp40) {
+    if (!hsgp40) {
+        return SGP40_ERR_NULL_PTR;
+    }
+
+    if (!hsgp40->hi2c) {
+        return SGP40_ERR_NOT_CONFIGURED;
+    }
+
+    if (hsgp40->async_busy) {                          // Guard : interdit si async en cours
+        return SGP40_ERR_BUSY;
+    }
+
+    /* General Call Reset : I2C addr=0x00 (7-bit) → DevAddress=0x00, data=0x06
+     * Conforme NXP I2C spec §3.1.12 et driver Sensirion sensirion_i2c_general_call_reset().
+     * Remet tous les périphériques I2C sur le bus à leur état POR. */
+    const uint8_t reset_cmd = 0x06U;
+    HAL_StatusTypeDef hal_status = HAL_I2C_Master_Transmit(
+        hsgp40->hi2c,
+        (uint16_t)0x00U,                               // General Call addr 7-bit = 0x00, HAL attend addr << 1 (déjà 0)
+        (uint8_t *)&reset_cmd,
+        1U,
+        hsgp40->i2c_timeout
+    );
+
+    /* Invalide l'état du handle : le SGP40 a redémarré (POR) */
+    hsgp40->initialized             = false;
+    hsgp40->measurement_mode_active = false;
+    hsgp40->last_measure_tick_ms    = 0U;
+    hsgp40->measure_count           = 0U;
+    hsgp40->voc_algo_initialized    = false;
+
+    /* NACK sur General Call est normal (certains périphériques ne l'ACK pas).
+     * HAL retourne HAL_ERROR avec I2C AF flag même si la trame a été émise.
+     * On retourne SGP40_OK dès que le bus n'était pas en timeout. */
+    if (hal_status == HAL_OK || hal_status == HAL_ERROR) {
+        hsgp40->consecutive_errors = 0U;
+        return SGP40_OK;
+    }
+
+    return SGP40_MapHalStatus(hal_status);             // Propage HAL_BUSY ou HAL_TIMEOUT
 }
 
 /**
@@ -1211,12 +1273,21 @@ void SGP40_Async_Process(SGP40_Async_t *ctx, uint32_t now_ms) {
 
 /**
  * @brief Récupère dernière mesure VOC raw
+ * @param ctx     Contexte async
+ * @param voc_raw Pointeur pour stocker VOC raw
+ * @retval SGP40_OK              si données valides (état DONE)
+ * @retval SGP40_ERR_NULL_PTR    si ctx ou voc_raw est NULL
+ * @retval SGP40_ERR_NOT_CONFIGURED si IDLE (aucune mesure lancée)
+ * @retval SGP40_ERR_BUSY        si transfert en cours (état non-DONE, non-IDLE)
+ * @retval ctx->last_status      si état ERROR (propage l'erreur réelle)
  * @note  Consomme la mesure et remet l'état à IDLE après lecture.
  */
 SGP40_Status SGP40_Async_GetData(SGP40_Async_t *ctx, uint16_t *voc_raw) {
     if (!ctx || !voc_raw) return SGP40_ERR_NULL_PTR;
 
-    if (ctx->state != SGP40_ASYNC_DONE) return SGP40_ERR_NOT_READY;
+    if (ctx->state == SGP40_ASYNC_IDLE)  return SGP40_ERR_NOT_CONFIGURED;
+    if (ctx->state == SGP40_ASYNC_ERROR) return ctx->last_status;
+    if (ctx->state != SGP40_ASYNC_DONE)  return SGP40_ERR_BUSY;
 
     *voc_raw   = ctx->voc_raw;
     ctx->state = SGP40_ASYNC_IDLE;

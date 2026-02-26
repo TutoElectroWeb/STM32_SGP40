@@ -91,7 +91,7 @@ UART_HandleTypeDef huart2;
 /* USER CODE BEGIN PV */
 
 /* --- SGP40 (VOC, async IT non-bloquant) --- */
-SGP40_HandleTypeDef hsgp40;     ///< Handle principal SGP40
+SGP40_Handle_t hsgp40;     ///< Handle principal SGP40
 SGP40_Async_t       sgp40_async; ///< Contexte FSM async SGP40
 
 /* --- BME280 (T/P/RH, async IT non-bloquant) --- */
@@ -337,3 +337,20 @@ void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c) {
 }
 
 /* USER CODE END 4 */
+
+/**
+  * @brief  This function is executed in case of error occurrence.
+  * @retval None
+  */
+void Error_Handler(void)
+{
+  /* USER CODE BEGIN Error_Handler_Debug */
+    /* Handler d'erreur bloquant: LED clignotante pour diagnostic visuel. */
+    __disable_irq();
+    while (1)  // Boucle d'erreur bloquante
+    {
+        HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);                            // Toggle LED LD2
+        for (volatile uint32_t wait = 0U; wait < 250000U; ++wait) { __NOP(); } // Temporisation busy-wait (~250 ms)
+    }
+  /* USER CODE END Error_Handler_Debug */
+}

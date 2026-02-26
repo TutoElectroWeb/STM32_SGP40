@@ -83,7 +83,7 @@ Driver C pur pour **Sensirion SGP40** sur STM32 HAL (I2C, adresse fixe `0x59`).
 ```c
 #include "STM32_SGP40.h"
 
-SGP40_HandleTypeDef hsgp40;
+SGP40_Handle_t hsgp40;
 
 SGP40_Status st = SGP40_Init(&hsgp40, &hi2c3);
 if (st != SGP40_OK) { Error_Handler(); }
@@ -100,7 +100,7 @@ Les personnalisations se font **après** `Init()` via les setters dédiés.
 ```c
 #include "STM32_SGP40.h"
 
-SGP40_HandleTypeDef hsgp40;
+SGP40_Handle_t hsgp40;
 
 // 1) Initialisation capteur (applique tous les défauts)
 SGP40_Status st = SGP40_Init(&hsgp40, &hi2c3);
@@ -395,7 +395,7 @@ Dossier : `exemples/` — index détaillé dans `exemples/README.md`.
 
 ```c
 /* PV — Variables globales */
-static SGP40_HandleTypeDef hsgp40;  ///< Handle principal du capteur SGP40
+static SGP40_Handle_t hsgp40;  ///< Handle principal du capteur SGP40
 
 /* main() — USER CODE 2 */
 SGP40_Status init_status = SGP40_Init(&hsgp40, &hi2c3);

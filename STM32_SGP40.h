@@ -105,6 +105,10 @@ extern "C" {
 #define SGP40_VOC_INDEX_TYPICAL      100U      ///< Valeur baseline typique
 #define SGP40_VOC_INDEX_MAX          500U      ///< Concentration maximale
 
+/** Résultats auto-test SGP40 — datasheet §5.2 (octet bas toujours 0x00) */
+#define SGP40_TEST_RESULT_OK         0xD400U   ///< Auto-test réussi  (heater + sensor OK)
+#define SGP40_TEST_RESULT_FAIL       0x4B00U   ///< Auto-test échoué (heater ou sensor défectueux)
+
 /* =============================================================================
  * Types exportés
  * ============================================================================= */
@@ -346,8 +350,12 @@ SGP40_Status SGP40_GetSerialNumber(SGP40_Handle_t *hsgp40, uint64_t *serial);
 /**
  * @brief Auto-test capteur (heater + sensor)
  * @param hsgp40      Handle SGP40
- * @param test_result Résultat test (pattern 0xD4XX = OK, 0x4BXX = échec)
- * @retval SGP40_Status
+ * @param test_result Résultat test brut — comparer avec SGP40_TEST_RESULT_OK (0xD400) :
+ *                    - 0xD400 : tous les tests réussis (heater + sensor OK)
+ *                    - 0x4B00 : au moins un test en échec
+ *                    - Datasheet §5.2 : l'octet bas est toujours 0x00
+ * @retval SGP40_OK            si test_result == 0xD400
+ * @retval SGP40_ERR_SELF_TEST si test_result != 0xD400
  * @note  Bloquant jusqu'à SGP40_SELFTEST_WAIT_MS (320 ms).
  */
 SGP40_Status SGP40_SelfTest(SGP40_Handle_t *hsgp40, uint16_t *test_result);
@@ -402,6 +410,23 @@ SGP40_Status SGP40_SetCompensation(SGP40_Handle_t *hsgp40, float temp_c, float r
  * @note  Réduit consommation ~0.1µA, nécessite SGP40_Init() après réutilisation.
  */
 SGP40_Status SGP40_HeaterOff(SGP40_Handle_t *hsgp40);
+
+/**
+ * @brief Soft Reset via I2C General Call (réinitialise TOUS les périphériques I2C du bus)
+ * @param hsgp40 Handle SGP40 (pour accéder à hi2c et i2c_timeout)
+ * @retval SGP40_OK                 Reset envoyé (ou NACK GC normal — reset probable)
+ * @retval SGP40_ERR_NULL_PTR       hsgp40 NULL
+ * @retval SGP40_ERR_NOT_CONFIGURED hi2c non configuré
+ * @retval SGP40_ERR_BUSY           async en cours
+ * @retval SGP40_ERR_TIMEOUT        timeout I2C (bus bloqué)
+ * @warning ⚠️  Reset I2C General Call (addr 0x00, data 0x06 — NXP I2C spec §3.1.12) :
+ *          TOUS les périphériques I2C du bus sont réinitialisés, pas uniquement le SGP40.
+ * @note   Identique à sensirion_i2c_general_call_reset() du driver officiel Sensirion.
+ *         Après appel, le SGP40 est en état POR → appeler SGP40_Init() avant usage.
+ *         NACK sur General Call est normal pour certains périphériques → retour SGP40_OK
+ *         même si HAL retourne HAL_ERROR avec flag AF.
+ */
+SGP40_Status SGP40_SoftReset(SGP40_Handle_t *hsgp40);
 
 /**
  * @brief Calcule VOC Index depuis VOC raw (algorithme officiel Sensirion)
@@ -681,7 +706,10 @@ void SGP40_Async_Process(SGP40_Async_t *ctx, uint32_t now_ms);
  * @brief Récupère dernière mesure VOC raw
  * @param ctx     Contexte async
  * @param voc_raw Pointeur pour stocker VOC raw
- * @retval SGP40_Status (OK si données valides, erreur sinon)
+ * @retval SGP40_OK              si données valides (état DONE)
+ * @retval SGP40_ERR_NOT_CONFIGURED  si IDLE (aucune mesure lancée)
+ * @retval SGP40_ERR_BUSY        si transfert en cours (état non-DONE, non-IDLE)
+ * @retval ctx->last_status      si état ERROR (propage l'erreur réelle)
  * @note  Consomme la mesure et remet l'état à IDLE après lecture.
  */
 SGP40_Status SGP40_Async_GetData(SGP40_Async_t *ctx, uint16_t *voc_raw);

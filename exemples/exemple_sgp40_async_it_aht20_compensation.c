@@ -61,9 +61,9 @@ I2C_HandleTypeDef hi2c3;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-SGP40_HandleTypeDef hsgp40;             ///< Handle principal du capteur SGP40
+SGP40_Handle_t hsgp40;             ///< Handle principal du capteur SGP40
 SGP40_Async_t sgp40_async;              ///< Contexte machine d'états async SGP40
-AHT20_HandleTypeDef haht20;             ///< Handle du capteur AHT20 (source T/RH)
+AHT20_Handle_t haht20;                  ///< Handle du capteur AHT20 (source T/RH)
 AHT20_Async aht20_async;               ///< Contexte machine d'états async AHT20
 
 static uint32_t sgp40_last_trigger_ms = 0U;  ///< Horodatage du dernier déclenchement SGP40 (pour TriggerEvery)
