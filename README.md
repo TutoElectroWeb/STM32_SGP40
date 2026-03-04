@@ -457,3 +457,9 @@ ou via les options de compilation (`-DSGP40_MAX_CONSECUTIVE_ERRORS=5`).
 - **Driver** : 0.9.0
 - **Algorithme** : Sensirion GasIndexAlgorithm v3.2
 - **API** : alignée sur `STM32_SGP40.h` et `STM32_SGP40.c` actuels
+
+---
+
+## Version
+
+**v0.9.0**
